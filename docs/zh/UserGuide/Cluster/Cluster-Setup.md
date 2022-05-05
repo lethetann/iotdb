@@ -59,7 +59,7 @@ git checkout rel/0.12
 > mvn clean package -pl cluster -am -DskipTests
 ```
 
-集群的二进制版本在目录 **cluster/target/{iotdb-project.version}**下
+集群的二进制版本在目录 **cluster/target/{iotdb-project.version}** 下
 
 ### 下载
 
@@ -98,7 +98,7 @@ git checkout rel/0.12
 
 `iotdb-engine.properties`、`iotdb-env.sh`/`iotdb-env.bat` 两个配置文件详细说明请参考 [附录/配置手册](https://github.com/apache/iotdb/blob/master/docs/zh/UserGuide/Appendix/Config-Manual.md)，与集群有关的配置项是在`iotdb-cluster.properties`文件中的，你可以直接查看 [配置文件](https://github.com/apache/iotdb/blob/master/cluster/src/assembly/resources/conf/iotdb-cluster.properties) 中的注释，也可以参考 [Cluster Configuration](#集群配置项)。
 
-配置文件位于**{cluster\_root\_dir}/conf**。
+配置文件位于 **{cluster\_root\_dir}/conf**。
 
 **你需要修改每个节点以下的配置项去启动你的IoTDB集群：**
 
@@ -205,7 +205,7 @@ iotdb-engines.properties 配置文件中的部分内容会不再生效：
 
 | 名字         | internal_ip                                                  |
 | ------------ | ------------------------------------------------------------ |
-| 描述         | IOTDB 集群各个节点之间内部通信的 IP 地址，比如心跳、snapshot 快照、raft log 等 |
+| 描述         | IOTDB 集群各个节点之间内部通信的 IP 地址，比如心跳、snapshot 快照、raft log 等。**`internal_ip`是集群内部的私有ip** |
 | 类型         | String                                                       |
 | 默认值       | 127.0.0.1                                                    |
 | 改后生效方式 | 重启服务生效，集群建立后不可再修改                           |
@@ -214,7 +214,7 @@ iotdb-engines.properties 配置文件中的部分内容会不再生效：
 
 | 名字         | internal_meta_port                                           |
 | ------------ | ------------------------------------------------------------ |
-| 描述         | IoTDB meta 服务端口，用于元数据组（又称集群管理组）通信，元数据组管理集群配置和存储组信息** IoTDB 将为每个 meta 服务自动创建心跳端口。默认 meta 服务心跳端口为`internal_meta_port+1`，请确认这两个端口不是系统保留端口并且未被占用** |
+| 描述         | IoTDB meta 服务端口，用于元数据组（又称集群管理组）通信，元数据组管理集群配置和存储组信息**IoTDB 将为每个 meta 服务自动创建心跳端口。默认 meta 服务心跳端口为`internal_meta_port+1`，请确认这两个端口不是系统保留端口并且未被占用** |
 | 类型         | Int32                                                        |
 | 默认值       | 9003                                                         |
 | 改后生效方式 | 重启服务生效，集群建立后不可再修改                           |
@@ -223,7 +223,7 @@ iotdb-engines.properties 配置文件中的部分内容会不再生效：
 
 | 名字         | internal_data_port                                           |
 | ------------ | ------------------------------------------------------------ |
-| 描述         | IoTDB data 服务端口，用于数据组通信，数据组管理数据模式和数据的存储** IoTDB 将为每个 data 服务自动创建心跳端口。默认的 data 服务心跳端口为`internal_data_port+1`。请确认这两个端口不是系统保留端口并且未被占用** |
+| 描述         | IoTDB data 服务端口，用于数据组通信，数据组管理数据模式和数据的存储**IoTDB 将为每个 data 服务自动创建心跳端口。默认的 data 服务心跳端口为`internal_data_port+1`。请确认这两个端口不是系统保留端口并且未被占用** |
 | 类型         | Int32                                                        |
 | 默认值       | 40010                                                        |
 | 改后生效方式 | 重启服务生效，集群建立后不可再修改                           |
@@ -250,7 +250,7 @@ iotdb-engines.properties 配置文件中的部分内容会不再生效：
 
 | 名字         | seed_nodes                                                   |
 | ------------ | ------------------------------------------------------------ |
-| 描述         | 集群中节点的地址，`{IP/DOMAIN}:internal_meta_port`格式，用逗号分割；对于伪分布式模式，可以都填写`localhost`，或是`127.0.0.1` 或是混合填写，但是不能够出现真实的 ip 地址；对于分布式模式，支持填写 real ip 或是 hostname，但是不能够出现`localhost`或是`127.0.0.1`。当使用`start-node.sh(.bat)`启动节点时，此配置意味着形成初始群集的节点，每个节点的`seed_nodes`应该一致，否则群集将初始化失败；当使用`add-node.sh(.bat)`添加节点到集群中时，此配置项可以是集群中已经存在的任何节点，不需要是用`start-node.sh(bat)`构建初始集群的节点。 |
+| 描述         | 集群中节点的地址（私有ip），`{IP/DOMAIN}:internal_meta_port`格式，用逗号分割；对于伪分布式模式，可以都填写`localhost`，或是`127.0.0.1` 或是混合填写，但是不能够出现真实的 ip 地址；对于分布式模式，支持填写 real ip 或是 hostname，但是不能够出现`localhost`或是`127.0.0.1`。当使用`start-node.sh(.bat)`启动节点时，此配置意味着形成初始群集的节点，每个节点的`seed_nodes`应该一致，否则群集将初始化失败；当使用`add-node.sh(.bat)`添加节点到集群中时，此配置项可以是集群中已经存在的任何节点，不需要是用`start-node.sh(bat)`构建初始集群的节点。 |
 | 类型         | String                                                       |
 | 默认值       | 127.0.0.1:9003,127.0.0.1:9005,127.0.0.1:9007                 |
 | 改后生效方式 | 重启服务生效                                                 |

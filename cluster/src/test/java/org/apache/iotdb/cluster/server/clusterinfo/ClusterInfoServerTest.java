@@ -20,8 +20,9 @@ package org.apache.iotdb.cluster.server.clusterinfo;
 
 import org.apache.iotdb.cluster.config.ClusterDescriptor;
 import org.apache.iotdb.cluster.rpc.thrift.ClusterInfoService;
+import org.apache.iotdb.commons.exception.MetadataException;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.exception.metadata.MetadataException;
+import org.apache.iotdb.db.exception.StorageEngineException;
 import org.apache.iotdb.rpc.RpcTransportFactory;
 
 import org.apache.thrift.protocol.TBinaryProtocol;
@@ -32,6 +33,8 @@ import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+
+import java.io.IOException;
 
 public class ClusterInfoServerTest {
 
@@ -47,7 +50,7 @@ public class ClusterInfoServerTest {
   }
 
   @After
-  public void tearDown() throws MetadataException {
+  public void tearDown() throws MetadataException, IOException, StorageEngineException {
     test.tearDown();
     service.stop();
   }

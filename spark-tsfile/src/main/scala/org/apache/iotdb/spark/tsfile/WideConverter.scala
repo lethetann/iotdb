@@ -35,7 +35,7 @@ import org.apache.iotdb.tsfile.read.filter.{TimeFilter, ValueFilter}
 import org.apache.iotdb.tsfile.utils.Binary
 import org.apache.iotdb.tsfile.write.record.TSRecord
 import org.apache.iotdb.tsfile.write.record.datapoint.DataPoint
-import org.apache.iotdb.tsfile.write.schema.{IMeasurementSchema, UnaryMeasurementSchema, Schema}
+import org.apache.iotdb.tsfile.write.schema.{IMeasurementSchema, MeasurementSchema, Schema}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.types._
@@ -138,7 +138,7 @@ object WideConverter extends Converter {
       requiredSchema.foreach(f => {
         if (!QueryConstant.RESERVED_TIME.equals(f.name)) {
           val path = new org.apache.iotdb.tsfile.read.common.Path(f.name, true)
-          if (devices.contains(path.getDevice) && measurementIds.contains(path.getMeasurement)) {
+          if (devices.contains(path.getDeviceIdString) && measurementIds.contains(path.getMeasurement)) {
             queriedSchema = queriedSchema.add(f)
           }
         }
@@ -422,7 +422,7 @@ object WideConverter extends Converter {
     * @param options encoding options
     * @return MeasurementSchema
     */
-  def getSeriesSchema(field: StructField, options: Map[String, String]): IMeasurementSchema = {
+  def getSeriesSchema(field: StructField, options: Map[String, String]): MeasurementSchema = {
     val dataType = getTsDataType(field.dataType)
     val encodingStr = dataType match {
       case TSDataType.BOOLEAN => options.getOrElse(QueryConstant.BOOLEAN, TSEncoding.PLAIN.toString)
@@ -436,7 +436,7 @@ object WideConverter extends Converter {
     val encoding = TSEncoding.valueOf(encodingStr)
     val fullPath = new Path(field.name, true)
     val measurement = fullPath.getMeasurement
-    new UnaryMeasurementSchema(measurement, dataType, encoding)
+    new MeasurementSchema(measurement, dataType, encoding)
   }
 
   /**
@@ -473,7 +473,7 @@ object WideConverter extends Converter {
     }).foreach(f => {
       val name = f.name
       val fullPath = new Path(name, true)
-      val device = fullPath.getDevice
+      val device = fullPath.getDeviceIdString
       val measurement = fullPath.getMeasurement
 
       if (!deviceToRecord.contains(device)) {

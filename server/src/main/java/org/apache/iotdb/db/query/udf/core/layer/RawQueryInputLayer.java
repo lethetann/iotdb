@@ -19,11 +19,12 @@
 
 package org.apache.iotdb.db.query.udf.core.layer;
 
+import org.apache.iotdb.commons.path.PartialPath;
 import org.apache.iotdb.db.exception.query.QueryProcessException;
-import org.apache.iotdb.db.metadata.PartialPath;
+import org.apache.iotdb.db.qp.physical.crud.UDTFPlan;
+import org.apache.iotdb.db.query.dataset.IUDFInputDataSet;
 import org.apache.iotdb.db.query.dataset.RawQueryDataSetWithValueFilter;
-import org.apache.iotdb.db.query.dataset.RawQueryDataSetWithoutValueFilter;
-import org.apache.iotdb.db.query.dataset.UDFInputDataSet;
+import org.apache.iotdb.db.query.dataset.UDFRawQueryInputDataSetWithoutValueFilter;
 import org.apache.iotdb.db.query.reader.series.IReaderByTimestamp;
 import org.apache.iotdb.db.query.reader.series.ManagedSeriesReader;
 import org.apache.iotdb.db.query.udf.core.layer.SafetyLine.SafetyPile;
@@ -38,7 +39,7 @@ import java.util.List;
 
 public class RawQueryInputLayer {
 
-  private UDFInputDataSet queryDataSet;
+  private IUDFInputDataSet queryDataSet;
   private TSDataType[] dataTypes;
   private int timestampIndex;
 
@@ -47,16 +48,12 @@ public class RawQueryInputLayer {
 
   /** InputLayerWithoutValueFilter */
   public RawQueryInputLayer(
-      long queryId,
-      float memoryBudgetInMB,
-      List<PartialPath> paths,
-      List<TSDataType> dataTypes,
-      List<ManagedSeriesReader> readers)
+      long queryId, float memoryBudgetInMB, UDTFPlan queryPlan, List<ManagedSeriesReader> readers)
       throws QueryProcessException, IOException, InterruptedException {
     construct(
         queryId,
         memoryBudgetInMB,
-        new RawQueryDataSetWithoutValueFilter(queryId, paths, dataTypes, readers, true));
+        new UDFRawQueryInputDataSetWithoutValueFilter(queryId, queryPlan, readers));
   }
 
   /** InputLayerWithValueFilter */
@@ -67,15 +64,22 @@ public class RawQueryInputLayer {
       List<TSDataType> dataTypes,
       TimeGenerator timeGenerator,
       List<IReaderByTimestamp> readers,
+      List<List<Integer>> readerToIndexList,
       List<Boolean> cached)
       throws QueryProcessException {
     construct(
         queryId,
         memoryBudgetInMB,
-        new RawQueryDataSetWithValueFilter(paths, dataTypes, timeGenerator, readers, cached, true));
+        new RawQueryDataSetWithValueFilter(
+            paths, dataTypes, timeGenerator, readers, readerToIndexList, cached, true));
   }
 
-  private void construct(long queryId, float memoryBudgetInMB, UDFInputDataSet queryDataSet)
+  public RawQueryInputLayer(long queryId, float memoryBudgetInMB, IUDFInputDataSet queryDataSet)
+      throws QueryProcessException {
+    construct(queryId, memoryBudgetInMB, queryDataSet);
+  }
+
+  private void construct(long queryId, float memoryBudgetInMB, IUDFInputDataSet queryDataSet)
       throws QueryProcessException {
     this.queryDataSet = queryDataSet;
     dataTypes = queryDataSet.getDataTypes().toArray(new TSDataType[0]);
@@ -90,28 +94,61 @@ public class RawQueryInputLayer {
     rowRecordList.setEvictionUpperBound(safetyLine.getSafetyLine());
   }
 
-  public LayerPointReader constructPointReader(int columnIndex) {
-    return new InputLayerPointReader(columnIndex);
+  public int getInputColumnCount() {
+    return dataTypes.length;
   }
 
-  private class InputLayerPointReader implements LayerPointReader {
+  public LayerPointReader constructTimePointReader() {
+    return new TimePointReader();
+  }
 
-    private final SafetyPile safetyPile;
+  public LayerPointReader constructValuePointReader(int columnIndex) {
+    return new ValuePointReader(columnIndex);
+  }
 
-    private final int columnIndex;
-    private int currentRowIndex;
+  private abstract class AbstractLayerPointReader implements LayerPointReader {
 
-    private boolean hasCachedRowRecord;
-    private Object[] cachedRowRecord;
+    protected final SafetyPile safetyPile;
 
-    InputLayerPointReader(int columnIndex) {
+    protected int currentRowIndex;
+
+    protected boolean hasCachedRowRecord;
+    protected Object[] cachedRowRecord;
+
+    AbstractLayerPointReader() {
       safetyPile = safetyLine.addSafetyPile();
-
-      this.columnIndex = columnIndex;
-      currentRowIndex = -1;
 
       hasCachedRowRecord = false;
       cachedRowRecord = null;
+      currentRowIndex = -1;
+    }
+
+    @Override
+    public final long currentTime() throws IOException {
+      return (long) cachedRowRecord[timestampIndex];
+    }
+
+    @Override
+    public final boolean isConstantPointReader() {
+      return false;
+    }
+
+    @Override
+    public final void readyForNext() {
+      hasCachedRowRecord = false;
+      cachedRowRecord = null;
+
+      safetyPile.moveForwardTo(currentRowIndex + 1);
+    }
+  }
+
+  private class ValuePointReader extends AbstractLayerPointReader {
+
+    protected final int columnIndex;
+
+    ValuePointReader(int columnIndex) {
+      super();
+      this.columnIndex = columnIndex;
     }
 
     @Override
@@ -122,7 +159,12 @@ public class RawQueryInputLayer {
 
       for (int i = currentRowIndex + 1; i < rowRecordList.size(); ++i) {
         Object[] rowRecordCandidate = rowRecordList.getRowRecord(i);
-        if (rowRecordCandidate[columnIndex] != null) {
+        // If any field in the current row are null, we should treat this row as valid.
+        // Because in a GROUP BY time query, we must return every time window record even if there's
+        // no data.
+        // Under the situation, if hasCachedRowRecord is false, this row will be skipped and the
+        // result is not as our expected.
+        if (rowRecordCandidate[columnIndex] != null || rowRecordList.fieldsHasAnyNull(i)) {
           hasCachedRowRecord = true;
           cachedRowRecord = rowRecordCandidate;
           currentRowIndex = i;
@@ -134,7 +176,8 @@ public class RawQueryInputLayer {
         while (queryDataSet.hasNextRowInObjects()) {
           Object[] rowRecordCandidate = queryDataSet.nextRowInObjects();
           rowRecordList.put(rowRecordCandidate);
-          if (rowRecordCandidate[columnIndex] != null) {
+          if (rowRecordCandidate[columnIndex] != null
+              || rowRecordList.fieldsHasAnyNull(rowRecordList.size() - 1)) {
             hasCachedRowRecord = true;
             cachedRowRecord = rowRecordCandidate;
             currentRowIndex = rowRecordList.size() - 1;
@@ -147,21 +190,8 @@ public class RawQueryInputLayer {
     }
 
     @Override
-    public void readyForNext() {
-      hasCachedRowRecord = false;
-      cachedRowRecord = null;
-
-      safetyPile.moveForwardTo(currentRowIndex + 1);
-    }
-
-    @Override
     public TSDataType getDataType() {
       return dataTypes[columnIndex];
-    }
-
-    @Override
-    public long currentTime() {
-      return (long) cachedRowRecord[timestampIndex];
     }
 
     @Override
@@ -190,8 +220,83 @@ public class RawQueryInputLayer {
     }
 
     @Override
+    public boolean isCurrentNull() {
+      return cachedRowRecord[columnIndex] == null;
+    }
+
+    @Override
     public Binary currentBinary() {
       return (Binary) cachedRowRecord[columnIndex];
+    }
+  }
+
+  private class TimePointReader extends AbstractLayerPointReader {
+
+    @Override
+    public boolean next() throws QueryProcessException, IOException {
+      if (hasCachedRowRecord) {
+        return true;
+      }
+
+      final int nextIndex = currentRowIndex + 1;
+      if (nextIndex < rowRecordList.size()) {
+        hasCachedRowRecord = true;
+        cachedRowRecord = rowRecordList.getRowRecord(nextIndex);
+        currentRowIndex = nextIndex;
+        return true;
+      }
+
+      if (queryDataSet.hasNextRowInObjects()) {
+        Object[] rowRecordCandidate = queryDataSet.nextRowInObjects();
+        rowRecordList.put(rowRecordCandidate);
+
+        hasCachedRowRecord = true;
+        cachedRowRecord = rowRecordCandidate;
+        currentRowIndex = rowRecordList.size() - 1;
+        return true;
+      }
+
+      return false;
+    }
+
+    @Override
+    public TSDataType getDataType() {
+      return TSDataType.INT64;
+    }
+
+    @Override
+    public int currentInt() throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public long currentLong() throws IOException {
+      return (long) cachedRowRecord[timestampIndex];
+    }
+
+    @Override
+    public float currentFloat() throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public double currentDouble() throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean currentBoolean() throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean isCurrentNull() throws IOException {
+      return false;
+    }
+
+    @Override
+    public Binary currentBinary() throws IOException {
+      throw new UnsupportedOperationException();
     }
   }
 }

@@ -20,7 +20,7 @@
 package org.apache.iotdb.db.query.udf.core.layer;
 
 import org.apache.iotdb.db.exception.query.QueryProcessException;
-import org.apache.iotdb.db.query.dataset.UDFInputDataSet;
+import org.apache.iotdb.db.query.dataset.IUDFInputDataSet;
 import org.apache.iotdb.db.query.expression.Expression;
 import org.apache.iotdb.db.query.udf.api.access.Row;
 import org.apache.iotdb.db.query.udf.api.access.RowWindow;
@@ -36,12 +36,18 @@ import org.apache.iotdb.db.utils.datastructure.TimeSelector;
 import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
 public class MultiInputColumnIntermediateLayer extends IntermediateLayer
-    implements UDFInputDataSet {
+    implements IUDFInputDataSet {
+
+  private static final Logger LOGGER =
+      LoggerFactory.getLogger(MultiInputColumnIntermediateLayer.class);
 
   private final LayerPointReader[] layerPointReaders;
   private final TSDataType[] dataTypes;
@@ -64,6 +70,9 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
 
     timeHeap = new TimeSelector(layerPointReaders.length << 1, true);
     for (LayerPointReader reader : layerPointReaders) {
+      if (reader.isConstantPointReader()) {
+        continue;
+      }
       if (reader.next()) {
         timeHeap.add(reader.currentTime());
       }
@@ -91,35 +100,39 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
     try {
       for (int i = 0; i < rowLength; ++i) {
         LayerPointReader reader = layerPointReaders[i];
-        if (!reader.next() || reader.currentTime() != minTime) {
+        if (!reader.next()
+            || (!reader.isConstantPointReader() && reader.currentTime() != minTime)) {
           continue;
         }
 
-        switch (reader.getDataType()) {
-          case INT32:
-            row[i] = reader.currentInt();
-            break;
-          case INT64:
-            row[i] = reader.currentLong();
-            break;
-          case FLOAT:
-            row[i] = reader.currentFloat();
-            break;
-          case DOUBLE:
-            row[i] = reader.currentDouble();
-            break;
-          case BOOLEAN:
-            row[i] = reader.currentBoolean();
-            break;
-          case TEXT:
-            row[i] = reader.currentBinary();
-            break;
-          default:
-            throw new UnSupportedDataTypeException("Unsupported data type.");
+        if (!reader.isCurrentNull()) {
+          switch (reader.getDataType()) {
+            case INT32:
+              row[i] = reader.currentInt();
+              break;
+            case INT64:
+              row[i] = reader.currentLong();
+              break;
+            case FLOAT:
+              row[i] = reader.currentFloat();
+              break;
+            case DOUBLE:
+              row[i] = reader.currentDouble();
+              break;
+            case BOOLEAN:
+              row[i] = reader.currentBoolean();
+              break;
+            case TEXT:
+              row[i] = reader.currentBinary();
+              break;
+            default:
+              throw new UnSupportedDataTypeException("Unsupported data type.");
+          }
         }
+
         reader.readyForNext();
 
-        if (reader.next()) {
+        if (!(reader.isConstantPointReader()) && reader.next()) {
           timeHeap.add(reader.currentTime());
         }
       }
@@ -144,6 +157,7 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
           new ElasticSerializableRowRecordListBackedMultiColumnRow(dataTypes);
 
       private boolean hasCached = false;
+      private boolean currentNull = false;
 
       @Override
       public boolean next() throws IOException {
@@ -154,8 +168,9 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
         if (!hasNextRowInObjects()) {
           return false;
         }
-
-        row.setRowRecord(nextRowInObjects());
+        Object[] rowRecords = nextRowInObjects();
+        currentNull = InputRowUtils.isAllNull(rowRecords);
+        row.setRowRecord(rowRecords);
         hasCached = true;
         return true;
       }
@@ -163,6 +178,7 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
       @Override
       public void readyForNext() {
         hasCached = false;
+        currentNull = false;
       }
 
       @Override
@@ -179,6 +195,11 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
       public Row currentRow() {
         return row;
       }
+
+      @Override
+      public boolean isCurrentNull() {
+        return currentNull;
+      }
     };
   }
 
@@ -187,7 +208,7 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
       SlidingSizeWindowAccessStrategy strategy, float memoryBudgetInMB)
       throws QueryProcessException {
 
-    final UDFInputDataSet udfInputDataSet = this;
+    final IUDFInputDataSet udfInputDataSet = this;
 
     return new LayerRowWindowReader() {
 
@@ -211,6 +232,14 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
 
         beginIndex += slidingStep;
         int endIndex = beginIndex + windowSize;
+        if (beginIndex < 0 || endIndex < 0) {
+          LOGGER.warn(
+              "MultiInputColumnIntermediateLayer$LayerRowWindowReader: index overflow. beginIndex: {}, endIndex: {}, windowSize: {}.",
+              beginIndex,
+              endIndex,
+              windowSize);
+          return false;
+        }
 
         int rowsToBeCollected = endIndex - rowRecordList.size();
         if (0 < rowsToBeCollected) {
@@ -219,9 +248,17 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
             return false;
           }
 
-          window.seek(beginIndex, rowRecordList.size());
+          window.seek(
+              beginIndex,
+              rowRecordList.size(),
+              rowRecordList.getTime(beginIndex),
+              rowRecordList.getTime(rowRecordList.size() - 1));
         } else {
-          window.seek(beginIndex, endIndex);
+          window.seek(
+              beginIndex,
+              endIndex,
+              rowRecordList.getTime(beginIndex),
+              rowRecordList.getTime(endIndex - 1));
         }
 
         hasCached = true;
@@ -256,7 +293,7 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
     final long slidingStep = strategy.getSlidingStep();
     final long displayWindowEnd = strategy.getDisplayWindowEnd();
 
-    final UDFInputDataSet udfInputDataSet = this;
+    final IUDFInputDataSet udfInputDataSet = this;
     final ElasticSerializableRowRecordList rowRecordList =
         new ElasticSerializableRowRecordList(
             dataTypes, queryId, memoryBudgetInMB, CACHE_BLOCK_SIZE);
@@ -314,7 +351,11 @@ public class MultiInputColumnIntermediateLayer extends IntermediateLayer
             break;
           }
         }
-        window.seek(nextIndexBegin, nextIndexEnd);
+        window.seek(
+            nextIndexBegin,
+            nextIndexEnd,
+            nextWindowTimeBegin,
+            nextWindowTimeBegin + timeInterval - 1);
 
         hasCached = nextIndexBegin != nextIndexEnd;
         return hasCached;

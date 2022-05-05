@@ -18,17 +18,24 @@
  */
 package org.apache.iotdb.db.metadata;
 
-import org.apache.iotdb.db.exception.metadata.IllegalPathException;
+import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.exception.MetadataException;
+import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.commons.utils.PathUtils;
 import org.apache.iotdb.db.metadata.mnode.InternalMNode;
+import org.apache.iotdb.db.metadata.path.AlignedPath;
+import org.apache.iotdb.db.metadata.path.MeasurementPath;
 import org.apache.iotdb.db.metadata.utils.MetaUtils;
 
 import org.junit.Assert;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class MetaUtilsTest {
@@ -37,54 +44,89 @@ public class MetaUtilsTest {
   public void testSplitPathToNodes() throws IllegalPathException {
     assertArrayEquals(
         Arrays.asList("root", "sg", "d1", "s1").toArray(),
-        MetaUtils.splitPathToDetachedPath("root.sg.d1.s1"));
+        PathUtils.splitPathToDetachedPath("root.sg.d1.s1"));
 
     assertArrayEquals(
-        Arrays.asList("root", "sg", "d1", "\"s.1\"").toArray(),
-        MetaUtils.splitPathToDetachedPath("root.sg.d1.\"s.1\""));
+        Arrays.asList("root", "sg", "d1", "s+1").toArray(),
+        PathUtils.splitPathToDetachedPath("root.sg.d1.`s+1`"));
 
     assertArrayEquals(
-        Arrays.asList("root", "sg", "d1", "\"s\\\".1\"").toArray(),
-        MetaUtils.splitPathToDetachedPath("root.sg.d1.\"s\\\".1\""));
+        Arrays.asList("root", "\"s g\"", "d1", "\"s+1\"").toArray(),
+        PathUtils.splitPathToDetachedPath("root.`\"s g\"`.d1.`\"s+1\"`"));
 
     assertArrayEquals(
-        Arrays.asList("root", "\"s g\"", "d1", "\"s.1\"").toArray(),
-        MetaUtils.splitPathToDetachedPath("root.\"s g\".d1.\"s.1\""));
-
-    assertArrayEquals(
-        Arrays.asList("root", "\"s g\"", "\"d_.1\"", "\"s.1.1\"").toArray(),
-        MetaUtils.splitPathToDetachedPath("root.\"s g\".\"d_.1\".\"s.1.1\""));
-
-    assertArrayEquals(
-        Arrays.asList("root", "1").toArray(), MetaUtils.splitPathToDetachedPath("root.1"));
+        Arrays.asList("root", "1").toArray(), PathUtils.splitPathToDetachedPath("root.1"));
 
     assertArrayEquals(
         Arrays.asList("root", "sg", "d1", "s", "1").toArray(),
-        MetaUtils.splitPathToDetachedPath("root.sg.d1.s.1"));
+        PathUtils.splitPathToDetachedPath("root.sg.d1.s.1"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "d1", "`a.b`").toArray(),
+        PathUtils.splitPathToDetachedPath("root.sg.d1.```a.b```"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "d1", "`").toArray(),
+        PathUtils.splitPathToDetachedPath("root.sg.d1.````"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "d1", "`").toArray(),
+        PathUtils.splitPathToDetachedPath("`root`.`sg`.`d1`.````"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "d1", "`").toArray(),
+        PathUtils.splitPathToDetachedPath("`root`.sg.`d1`.````"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "d1.`").toArray(),
+        PathUtils.splitPathToDetachedPath("root.sg.`d1.```"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "\"d").toArray(),
+        PathUtils.splitPathToDetachedPath("root.sg.`\\\"d`"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "\td").toArray(),
+        PathUtils.splitPathToDetachedPath("root.sg.`\\td`"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "sg", "\\td").toArray(),
+        PathUtils.splitPathToDetachedPath("root.sg.`\\\\td`"));
+
+    assertArrayEquals(
+        Arrays.asList("root", "laptop", "d1", "\"1.2.3\"").toArray(),
+        PathUtils.splitPathToDetachedPath("root.laptop.d1.`\\\"1.2.3\\\"`"));
 
     try {
-      MetaUtils.splitPathToDetachedPath("root.sg.\"d.1\"\"s.1\"");
+      PathUtils.splitPathToDetachedPath("root.sg.d1.```");
       fail();
     } catch (IllegalPathException e) {
-      Assert.assertEquals("root.sg.\"d.1\"\"s.1\" is not a legal path", e.getMessage());
+      Assert.assertEquals("root.sg.d1.``` is not a legal path", e.getMessage());
     }
 
     try {
-      MetaUtils.splitPathToDetachedPath("root..a");
+      PathUtils.splitPathToDetachedPath("root.sg.`d1`..`aa``b`");
+      fail();
+    } catch (IllegalPathException e) {
+      Assert.assertEquals("root.sg.`d1`..`aa``b` is not a legal path", e.getMessage());
+    }
+
+    try {
+      PathUtils.splitPathToDetachedPath("root.sg.d1.`s+`-1\"`");
+      fail();
+    } catch (IllegalPathException e) {
+      Assert.assertEquals("root.sg.d1.`s+`-1\"` is not a legal path", e.getMessage());
+    }
+
+    try {
+      PathUtils.splitPathToDetachedPath("root..a");
       fail();
     } catch (IllegalPathException e) {
       Assert.assertEquals("root..a is not a legal path", e.getMessage());
     }
 
     try {
-      MetaUtils.splitPathToDetachedPath("root.sg.d1.'s1'");
-      fail();
-    } catch (IllegalPathException e) {
-      Assert.assertEquals("root.sg.d1.'s1' is not a legal path", e.getMessage());
-    }
-
-    try {
-      MetaUtils.splitPathToDetachedPath("root.sg.d1.");
+      PathUtils.splitPathToDetachedPath("root.sg.d1.");
       fail();
     } catch (IllegalPathException e) {
       Assert.assertEquals("root.sg.d1. is not a legal path", e.getMessage());
@@ -122,5 +164,30 @@ public class MetaUtilsTest {
             Assert.assertEquals("root.a.b", fullPath);
           }
         });
+  }
+
+  @Test
+  public void testGroupAlignedPath() throws MetadataException {
+    List<PartialPath> pathList = new ArrayList<>();
+
+    MeasurementPath path1 = new MeasurementPath(new PartialPath("root.sg.device.s1"), null);
+    pathList.add(path1);
+    MeasurementPath path2 = new MeasurementPath(new PartialPath("root.sg.device.s2"), null);
+    pathList.add(path2);
+
+    MeasurementPath path3 = new MeasurementPath(new PartialPath("root.sg.aligned_device.s1"), null);
+    path3.setUnderAlignedEntity(true);
+    pathList.add(path3);
+    MeasurementPath path4 = new MeasurementPath(new PartialPath("root.sg.aligned_device.s2"), null);
+    path4.setUnderAlignedEntity(true);
+    pathList.add(path4);
+
+    AlignedPath alignedPath = new AlignedPath(path3);
+    alignedPath.addMeasurement(path4);
+
+    List<PartialPath> result = MetaUtils.groupAlignedPaths(pathList);
+    assertTrue(result.contains(path1));
+    assertTrue(result.contains(path2));
+    assertTrue(result.contains(alignedPath));
   }
 }

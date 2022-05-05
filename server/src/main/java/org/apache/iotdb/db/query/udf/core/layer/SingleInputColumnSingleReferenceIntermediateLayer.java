@@ -33,9 +33,15 @@ import org.apache.iotdb.db.query.udf.core.reader.LayerRowWindowReader;
 import org.apache.iotdb.db.query.udf.datastructure.tv.ElasticSerializableTVList;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 
 public class SingleInputColumnSingleReferenceIntermediateLayer extends IntermediateLayer {
+
+  private static final Logger LOGGER =
+      LoggerFactory.getLogger(SingleInputColumnSingleReferenceIntermediateLayer.class);
 
   private final LayerPointReader parentLayerPointReader;
   private final TSDataType dataType;
@@ -63,11 +69,15 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
       private final Row row = new LayerPointReaderBackedSingleColumnRow(parentLayerPointReader);
 
       private boolean hasCached = false;
+      private boolean isCurrentNull = false;
 
       @Override
       public boolean next() throws IOException, QueryProcessException {
         if (!hasCached) {
           hasCached = parentLayerPointReader.next();
+          if (hasCached) {
+            isCurrentNull = parentLayerPointReader.isCurrentNull();
+          }
         }
         return hasCached;
       }
@@ -75,7 +85,7 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
       @Override
       public void readyForNext() {
         hasCached = false;
-
+        isCurrentNull = false;
         parentLayerPointReader.readyForNext();
       }
 
@@ -92,6 +102,11 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
       @Override
       public Row currentRow() {
         return row;
+      }
+
+      @Override
+      public boolean isCurrentNull() {
+        return isCurrentNull;
       }
     };
   }
@@ -123,6 +138,14 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
 
         beginIndex += slidingStep;
         int endIndex = beginIndex + windowSize;
+        if (beginIndex < 0 || endIndex < 0) {
+          LOGGER.warn(
+              "SingleInputColumnSingleReferenceIntermediateLayer$LayerRowWindowReader: index overflow. beginIndex: {}, endIndex: {}, windowSize: {}.",
+              beginIndex,
+              endIndex,
+              windowSize);
+          return false;
+        }
 
         int pointsToBeCollected = endIndex - tvList.size();
         if (0 < pointsToBeCollected) {
@@ -132,9 +155,14 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
             return false;
           }
 
-          window.seek(beginIndex, tvList.size());
+          window.seek(
+              beginIndex,
+              tvList.size(),
+              tvList.getTime(beginIndex),
+              tvList.getTime(tvList.size() - 1));
         } else {
-          window.seek(beginIndex, endIndex);
+          window.seek(
+              beginIndex, endIndex, tvList.getTime(beginIndex), tvList.getTime(endIndex - 1));
         }
 
         hasCached = true;
@@ -144,6 +172,8 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
       @Override
       public void readyForNext() {
         hasCached = false;
+
+        tvList.setEvictionUpperBound(beginIndex + 1);
       }
 
       @Override
@@ -224,7 +254,11 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
             break;
           }
         }
-        window.seek(nextIndexBegin, nextIndexEnd);
+        window.seek(
+            nextIndexBegin,
+            nextIndexEnd,
+            nextWindowTimeBegin,
+            nextWindowTimeBegin + timeInterval - 1);
 
         hasCached = nextIndexBegin != nextIndexEnd;
         return hasCached;
@@ -234,6 +268,8 @@ public class SingleInputColumnSingleReferenceIntermediateLayer extends Intermedi
       public void readyForNext() {
         hasCached = false;
         nextWindowTimeBegin += slidingStep;
+
+        tvList.setEvictionUpperBound(nextIndexBegin + 1);
       }
 
       @Override

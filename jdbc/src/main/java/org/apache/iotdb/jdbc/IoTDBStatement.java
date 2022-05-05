@@ -19,6 +19,7 @@
 
 package org.apache.iotdb.jdbc;
 
+import org.apache.iotdb.common.rpc.thrift.TSStatus;
 import org.apache.iotdb.rpc.RpcUtils;
 import org.apache.iotdb.rpc.StatementExecutionException;
 import org.apache.iotdb.rpc.TSStatusCode;
@@ -30,7 +31,6 @@ import org.apache.iotdb.service.rpc.thrift.TSExecuteStatementResp;
 import org.apache.iotdb.service.rpc.thrift.TSIService;
 import org.apache.iotdb.service.rpc.thrift.TSQueryDataSet;
 import org.apache.iotdb.service.rpc.thrift.TSQueryNonAlignDataSet;
-import org.apache.iotdb.service.rpc.thrift.TSStatus;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
 import org.apache.thrift.TException;
@@ -281,6 +281,7 @@ public class IoTDBStatement implements Statement {
                 queryId,
                 sessionId,
                 execResp.nonAlignQueryDataSet,
+                execResp.tracingInfo,
                 execReq.timeout,
                 execResp.operationType,
                 execResp.getSgColumns(),
@@ -298,6 +299,7 @@ public class IoTDBStatement implements Statement {
                 queryId,
                 sessionId,
                 execResp.queryDataSet,
+                execResp.tracingInfo,
                 execReq.timeout,
                 true);
       }
@@ -431,6 +433,7 @@ public class IoTDBStatement implements Statement {
               queryId,
               sessionId,
               execResp.nonAlignQueryDataSet,
+              execResp.tracingInfo,
               execReq.timeout,
               execResp.operationType,
               execResp.sgColumns,
@@ -448,6 +451,7 @@ public class IoTDBStatement implements Statement {
               queryId,
               sessionId,
               execResp.queryDataSet,
+              execResp.tracingInfo,
               execReq.timeout,
               execResp.operationType,
               execResp.columns,

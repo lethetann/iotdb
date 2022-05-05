@@ -31,9 +31,9 @@ import org.apache.iotdb.cluster.partition.PartitionTable;
 import org.apache.iotdb.cluster.partition.slot.SlotPartitionTable;
 import org.apache.iotdb.cluster.rpc.thrift.Node;
 import org.apache.iotdb.cluster.server.member.DataGroupMember;
+import org.apache.iotdb.commons.path.PartialPath;
 import org.apache.iotdb.db.engine.StorageEngine;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
-import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.tsfile.utils.Pair;
 import org.apache.iotdb.tsfile.write.schema.TimeseriesSchema;
 
@@ -53,6 +53,8 @@ import java.util.Map.Entry;
  * Different from PartitionedSnapshotLogManager, FilePartitionedSnapshotLogManager does not store
  * the committed in memory after snapshots, it considers the logs are contained in the TsFiles so it
  * will record every TsFiles in the slot instead.
+ *
+ * <p>FilePartitionedSnapshotLogManager is used for dataGroup
  */
 public class FilePartitionedSnapshotLogManager extends PartitionedSnapshotLogManager<FileSnapshot> {
 
@@ -133,10 +135,14 @@ public class FilePartitionedSnapshotLogManager extends PartitionedSnapshotLogMan
     boolean slotExistsInPartition;
     HashSet<Integer> slots = null;
     if (dataGroupMember.getMetaGroupMember() != null) {
-      slots =
-          new HashSet<>(
-              ((SlotPartitionTable) dataGroupMember.getMetaGroupMember().getPartitionTable())
-                  .getNodeSlots(dataGroupMember.getHeader()));
+      // if header node in raft group has removed, the result may be null
+      List<Integer> nodeSlots =
+          ((SlotPartitionTable) dataGroupMember.getMetaGroupMember().getPartitionTable())
+              .getNodeSlots(dataGroupMember.getHeader());
+      // the method of 'HashSet(Collection<? extends E> c)' throws NPE,so we need check this part
+      if (nodeSlots != null) {
+        slots = new HashSet<>(nodeSlots);
+      }
     }
 
     for (Map.Entry<Integer, Collection<TimeseriesSchema>> entry : slotTimeseries.entrySet()) {

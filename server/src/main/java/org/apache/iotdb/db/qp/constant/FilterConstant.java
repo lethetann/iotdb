@@ -19,7 +19,7 @@
 
 package org.apache.iotdb.db.qp.constant;
 
-import org.apache.iotdb.db.qp.sql.SqlBaseLexer;
+import org.apache.iotdb.db.qp.sql.SqlLexer;
 
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -50,15 +50,16 @@ public class FilterConstant {
   }
 
   static {
-    lexerToFilterType.put(SqlBaseLexer.OPERATOR_EQ, FilterType.EQUAL);
-    lexerToFilterType.put(SqlBaseLexer.OPERATOR_NEQ, FilterType.NOTEQUAL);
-    lexerToFilterType.put(SqlBaseLexer.OPERATOR_LTE, FilterType.LESSTHANOREQUALTO);
-    lexerToFilterType.put(SqlBaseLexer.OPERATOR_LT, FilterType.LESSTHAN);
-    lexerToFilterType.put(SqlBaseLexer.OPERATOR_GTE, FilterType.GREATERTHANOREQUALTO);
-    lexerToFilterType.put(SqlBaseLexer.OPERATOR_GT, FilterType.GREATERTHAN);
-    lexerToFilterType.put(SqlBaseLexer.OPERATOR_IN, FilterType.IN);
-    lexerToFilterType.put(SqlBaseLexer.REGEXP, FilterType.REGEXP);
-    lexerToFilterType.put(SqlBaseLexer.LIKE, FilterType.LIKE);
+    lexerToFilterType.put(SqlLexer.OPERATOR_DEQ, FilterType.EQUAL);
+    lexerToFilterType.put(SqlLexer.OPERATOR_SEQ, FilterType.EQUAL);
+    lexerToFilterType.put(SqlLexer.OPERATOR_NEQ, FilterType.NOTEQUAL);
+    lexerToFilterType.put(SqlLexer.OPERATOR_LTE, FilterType.LESSTHANOREQUALTO);
+    lexerToFilterType.put(SqlLexer.OPERATOR_LT, FilterType.LESSTHAN);
+    lexerToFilterType.put(SqlLexer.OPERATOR_GTE, FilterType.GREATERTHANOREQUALTO);
+    lexerToFilterType.put(SqlLexer.OPERATOR_GT, FilterType.GREATERTHAN);
+    lexerToFilterType.put(SqlLexer.OPERATOR_IN, FilterType.IN);
+    lexerToFilterType.put(SqlLexer.REGEXP, FilterType.REGEXP);
+    lexerToFilterType.put(SqlLexer.LIKE, FilterType.LIKE);
   }
 
   static {

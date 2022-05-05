@@ -261,15 +261,22 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
       "YEAR", "EXCEPT", "OUTPUT", "ZONE", "EXCEPTION"
     };
     TreeMap myKeywordMap = new TreeMap();
-    for (int i = 0; i < allIotdbSQLKeywords.length; i++)
+    for (int i = 0; i < allIotdbSQLKeywords.length; i++) {
       myKeywordMap.put(allIotdbSQLKeywords[i], null);
+    }
     HashMap sql92KeywordMap = new HashMap(sql92Keywords.length);
-    for (int j = 0; j < sql92Keywords.length; j++) sql92KeywordMap.put(sql92Keywords[j], null);
+    for (int j = 0; j < sql92Keywords.length; j++) {
+      sql92KeywordMap.put(sql92Keywords[j], null);
+    }
     Iterator it = sql92KeywordMap.keySet().iterator();
-    while (it.hasNext()) myKeywordMap.remove(it.next());
+    while (it.hasNext()) {
+      myKeywordMap.remove(it.next());
+    }
     StringBuffer keywordBuf = new StringBuffer();
     it = myKeywordMap.keySet().iterator();
-    if (it.hasNext()) keywordBuf.append(it.next().toString());
+    if (it.hasNext()) {
+      keywordBuf.append(it.next().toString());
+    }
     while (it.hasNext()) {
       keywordBuf.append(",");
       keywordBuf.append(it.next().toString());
@@ -402,6 +409,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         null,
+        null,
         (long) 60 * 1000,
         true);
   }
@@ -445,6 +453,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         null,
         0,
         sessionId,
+        null,
         null,
         (long) 60 * 1000,
         true);
@@ -502,6 +511,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -509,8 +519,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
   public static TSQueryDataSet convertQueryDataSetByFetchSize(
       QueryDataSet queryDataSet, int fetchSize, WatermarkEncoder watermarkEncoder)
       throws IOException {
-    List<TSDataType> dataTypes = queryDataSet.getDataTypes();
-    int columnNum = dataTypes.size();
+    int columnNum = queryDataSet.getColumnNum();
     TSQueryDataSet tsQueryDataSet = new TSQueryDataSet();
     // one time column and each value column has a actual value buffer and a bitmap value to
     // indicate whether it is a null
@@ -714,6 +723,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -817,6 +827,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -870,6 +881,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         null,
         0,
         sessionId,
+        null,
         null,
         (long) 60 * 1000,
         true);
@@ -984,6 +996,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         null,
+        null,
         (long) 60 * 1000,
         true);
   }
@@ -1056,7 +1069,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         m.put("type", listType.get(i));
         if (i == 2) {
           m.put("val", rs.getString(1));
-        } else if (fields[i].getSqlType().equals("INT32")) {
+        } else if ("INT32".equals(fields[i].getSqlType())) {
           m.put("val", 0);
         } else {
           m.put("val", "");
@@ -1086,6 +1099,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -1158,6 +1172,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -1210,6 +1225,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         null,
+        null,
         (long) 60 * 1000,
         true);
   }
@@ -1257,6 +1273,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         null,
         0,
         sessionId,
+        null,
         null,
         (long) 60 * 1000,
         true);
@@ -1473,6 +1490,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -1528,6 +1546,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         null,
+        null,
         (long) 60 * 1000,
         true);
   }
@@ -1571,6 +1590,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         null,
         0,
         sessionId,
+        null,
         null,
         (long) 60 * 1000,
         true);
@@ -1648,6 +1668,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -1726,6 +1747,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -1779,6 +1801,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         null,
+        null,
         (long) 60 * 1000,
         true);
   }
@@ -1818,6 +1841,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         null,
         0,
         sessionId,
+        null,
         null,
         (long) 60 * 1000,
         true);
@@ -1937,6 +1961,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -1979,6 +2004,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -2147,6 +2173,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -2317,6 +2344,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -2533,6 +2561,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         0,
         sessionId,
         tsdataset,
+        null,
         (long) 60 * 1000,
         false);
   }
@@ -2574,6 +2603,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         null,
         0,
         sessionId,
+        null,
         null,
         (long) 60 * 1000,
         true);
@@ -2627,6 +2657,7 @@ public class IoTDBDatabaseMetadata implements DatabaseMetaData {
         null,
         0,
         sessionId,
+        null,
         null,
         (long) 60 * 1000,
         true);

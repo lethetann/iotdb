@@ -35,9 +35,15 @@ import org.apache.iotdb.db.query.udf.datastructure.tv.ElasticSerializableTVList;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.utils.Binary;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 
 public class SingleInputColumnMultiReferenceIntermediateLayer extends IntermediateLayer {
+
+  private static final Logger LOGGER =
+      LoggerFactory.getLogger(SingleInputColumnMultiReferenceIntermediateLayer.class);
 
   private final LayerPointReader parentLayerPointReader;
   private final TSDataType dataType;
@@ -69,6 +75,11 @@ public class SingleInputColumnMultiReferenceIntermediateLayer extends Intermedia
 
       private boolean hasCached = false;
       private int currentPointIndex = -1;
+
+      @Override
+      public boolean isConstantPointReader() {
+        return parentLayerPointReader.isConstantPointReader();
+      }
 
       @Override
       public boolean next() throws QueryProcessException, IOException {
@@ -129,6 +140,11 @@ public class SingleInputColumnMultiReferenceIntermediateLayer extends Intermedia
       public Binary currentBinary() throws IOException {
         return tvList.getBinary(currentPointIndex);
       }
+
+      @Override
+      public boolean isCurrentNull() throws IOException {
+        return tvList.isNull(currentPointIndex);
+      }
     };
   }
 
@@ -178,6 +194,11 @@ public class SingleInputColumnMultiReferenceIntermediateLayer extends Intermedia
       public Row currentRow() {
         return row;
       }
+
+      @Override
+      public boolean isCurrentNull() throws IOException {
+        return tvList.isNull(currentRowIndex);
+      }
     };
   }
 
@@ -205,6 +226,14 @@ public class SingleInputColumnMultiReferenceIntermediateLayer extends Intermedia
 
         beginIndex += slidingStep;
         int endIndex = beginIndex + windowSize;
+        if (beginIndex < 0 || endIndex < 0) {
+          LOGGER.warn(
+              "SingleInputColumnMultiReferenceIntermediateLayer$LayerRowWindowReader: index overflow. beginIndex: {}, endIndex: {}, windowSize: {}.",
+              beginIndex,
+              endIndex,
+              windowSize);
+          return false;
+        }
 
         int pointsToBeCollected = endIndex - tvList.size();
         if (0 < pointsToBeCollected) {
@@ -214,9 +243,14 @@ public class SingleInputColumnMultiReferenceIntermediateLayer extends Intermedia
             return false;
           }
 
-          window.seek(beginIndex, tvList.size());
+          window.seek(
+              beginIndex,
+              tvList.size(),
+              tvList.getTime(beginIndex),
+              tvList.getTime(tvList.size() - 1));
         } else {
-          window.seek(beginIndex, endIndex);
+          window.seek(
+              beginIndex, endIndex, tvList.getTime(beginIndex), tvList.getTime(endIndex - 1));
         }
 
         hasCached = true;
@@ -307,7 +341,11 @@ public class SingleInputColumnMultiReferenceIntermediateLayer extends Intermedia
             break;
           }
         }
-        window.seek(nextIndexBegin, nextIndexEnd);
+        window.seek(
+            nextIndexBegin,
+            nextIndexEnd,
+            nextWindowTimeBegin,
+            nextWindowTimeBegin + timeInterval - 1);
 
         hasCached = nextIndexBegin != nextIndexEnd;
         return hasCached;

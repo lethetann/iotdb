@@ -18,9 +18,14 @@
  */
 package org.apache.iotdb.db.utils;
 
+import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.path.PartialPath;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
 import org.apache.iotdb.db.engine.StorageEngine;
+import org.apache.iotdb.db.engine.modification.Deletion;
+import org.apache.iotdb.db.engine.modification.Modification;
+import org.apache.iotdb.db.engine.modification.ModificationFile;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
 import org.apache.iotdb.db.exception.query.QueryProcessException;
 import org.apache.iotdb.db.qp.Planner;
@@ -33,7 +38,7 @@ import org.apache.iotdb.tsfile.exception.write.WriteProcessException;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.iotdb.tsfile.fileSystem.FSFactoryProducer;
-import org.apache.iotdb.tsfile.read.ReadOnlyTsFile;
+import org.apache.iotdb.tsfile.read.TsFileReader;
 import org.apache.iotdb.tsfile.read.TsFileSequenceReader;
 import org.apache.iotdb.tsfile.read.common.Path;
 import org.apache.iotdb.tsfile.read.common.RowRecord;
@@ -43,7 +48,7 @@ import org.apache.iotdb.tsfile.write.TsFileWriter;
 import org.apache.iotdb.tsfile.write.record.TSRecord;
 import org.apache.iotdb.tsfile.write.record.datapoint.DataPoint;
 import org.apache.iotdb.tsfile.write.record.datapoint.LongDataPoint;
-import org.apache.iotdb.tsfile.write.schema.UnaryMeasurementSchema;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 
 import org.apache.commons.io.FileUtils;
 import org.junit.After;
@@ -60,28 +65,22 @@ import java.util.Map;
 
 public class TsFileRewriteToolTest {
 
+  private final boolean newEnablePartition = true;
+  private final long newPartitionInterval = 3600_000;
+  protected final long maxTimestamp = 100000000L;
+  protected final String folder = "target" + File.separator + "split";
+  protected final String STORAGE_GROUP = "root.sg_0";
+  protected final String DEVICE1 = STORAGE_GROUP + ".device_1";
+  protected final String DEVICE2 = STORAGE_GROUP + ".device_2";
+  protected final String SENSOR1 = "sensor_1";
+  protected final String SENSOR2 = "sensor_2";
+  private final long VALUE_OFFSET = 1;
+  private final IPlanExecutor queryExecutor = new PlanExecutor();
+  private final Planner processor = new Planner();
   private String path = null;
-
   private IoTDBConfig config;
   private boolean originEnablePartition;
   private long originPartitionInterval;
-
-  private final boolean newEnablePartition = true;
-  private final long newPartitionInterval = 3600_000;
-
-  private final long maxTimestamp = 100000000L;
-
-  private final String folder = "target" + File.separator + "split";
-
-  private final String STORAGE_GROUP = "root.sg_0";
-  private final String DEVICE1 = STORAGE_GROUP + ".device_1";
-  private final String DEVICE2 = STORAGE_GROUP + ".device_2";
-  private final String SENSOR1 = "sensor_1";
-  private final String SENSOR2 = "sensor_2";
-  private final long VALUE_OFFSET = 1;
-
-  private final IPlanExecutor queryExecutor = new PlanExecutor();
-  private final Planner processor = new Planner();
 
   public TsFileRewriteToolTest() throws QueryProcessException {}
 
@@ -175,7 +174,7 @@ public class TsFileRewriteToolTest {
     deviceSensorsMap.put(DEVICE1, sensors);
     createOneTsFile(deviceSensorsMap);
     // try load the tsfile
-    String sql = "load \"" + path + "\"" + " autoregister=true";
+    String sql = String.format("load '%s' autoregister=true", path);
     try {
       queryExecutor.processNonQuery(processor.parseSQLToPhysicalPlan(sql));
     } catch (Exception e) {
@@ -191,10 +190,43 @@ public class TsFileRewriteToolTest {
     deviceSensorsMap.put(DEVICE1, sensors);
     createOneTsFileWithOnlyOnePage(deviceSensorsMap);
     // try load the tsfile
-    String sql = "load \"" + path + "\"" + " autoregister=true";
+    String sql = String.format("load '%s' autoregister=true", path);
     try {
       queryExecutor.processNonQuery(processor.parseSQLToPhysicalPlan(sql));
     } catch (Exception e) {
+      Assert.fail(e.getMessage());
+    }
+  }
+
+  private void createFile(
+      List<TsFileResource> resourcesToBeSettled,
+      HashMap<String, List<String>> deviceSensorsMap,
+      String timeseriesPath)
+      throws IOException {
+    createOneTsFile(deviceSensorsMap);
+    createlModificationFile(timeseriesPath);
+    TsFileResource tsFileResource = new TsFileResource(new File(path));
+    tsFileResource.setModFile(
+        new ModificationFile(tsFileResource.getTsFilePath() + ModificationFile.FILE_SUFFIX));
+    tsFileResource.serialize();
+    tsFileResource.close();
+    resourcesToBeSettled.add(tsFileResource);
+  }
+
+  public void createlModificationFile(String timeseriesPath) {
+    String modFilePath = path + ModificationFile.FILE_SUFFIX;
+    ModificationFile modificationFile = new ModificationFile(modFilePath);
+    List<Modification> mods = new ArrayList<>();
+    try {
+      PartialPath partialPath = new PartialPath(timeseriesPath);
+      mods.add(new Deletion(partialPath, 10000000, 1500, 10000));
+      mods.add(new Deletion(partialPath, 10000000, 20000, 30000));
+      mods.add(new Deletion(partialPath, 10000000, 45000, 50000));
+      for (Modification mod : mods) {
+        modificationFile.write(mod);
+      }
+      modificationFile.close();
+    } catch (IllegalPathException | IOException e) {
       Assert.fail(e.getMessage());
     }
   }
@@ -205,7 +237,7 @@ public class TsFileRewriteToolTest {
     List<TsFileResource> splitResource = new ArrayList<>();
     try {
       TsFileRewriteTool.rewriteTsFile(tsFileResource, splitResource);
-    } catch (IOException | WriteProcessException e) {
+    } catch (IOException | WriteProcessException | IllegalPathException e) {
       Assert.fail(e.getMessage());
     }
     Assert.assertEquals(maxTimestamp / newPartitionInterval + 1, splitResource.size());
@@ -231,8 +263,7 @@ public class TsFileRewriteToolTest {
           String device = entry.getKey();
           for (String sensor : entry.getValue()) {
             tsFileWriter.registerTimeseries(
-                new Path(device, sensor),
-                new UnaryMeasurementSchema(sensor, TSDataType.INT64, TSEncoding.RLE));
+                new Path(device), new MeasurementSchema(sensor, TSDataType.INT64, TSEncoding.RLE));
           }
         }
       } catch (WriteProcessException e) {
@@ -262,7 +293,7 @@ public class TsFileRewriteToolTest {
     }
   }
 
-  private void createOneTsFile(HashMap<String, List<String>> deviceSensorsMap) {
+  protected void createOneTsFile(HashMap<String, List<String>> deviceSensorsMap) {
     try {
       File f = FSFactoryProducer.getFSFactory().getFile(path);
       TsFileWriter tsFileWriter = new TsFileWriter(f);
@@ -272,8 +303,7 @@ public class TsFileRewriteToolTest {
           String device = entry.getKey();
           for (String sensor : entry.getValue()) {
             tsFileWriter.registerTimeseries(
-                new Path(device, sensor),
-                new UnaryMeasurementSchema(sensor, TSDataType.INT64, TSEncoding.RLE));
+                new Path(device), new MeasurementSchema(sensor, TSDataType.INT64, TSEncoding.RLE));
           }
         }
       } catch (WriteProcessException e) {
@@ -302,7 +332,7 @@ public class TsFileRewriteToolTest {
       String tsFilePath, int index, HashMap<String, List<String>> deviceSensorsMap)
       throws IOException {
     try (TsFileSequenceReader reader = new TsFileSequenceReader(tsFilePath);
-        ReadOnlyTsFile readTsFile = new ReadOnlyTsFile(reader)) {
+        TsFileReader readTsFile = new TsFileReader(reader)) {
       ArrayList<Path> paths = new ArrayList<>();
 
       int totalSensorCount = 0;
@@ -346,8 +376,7 @@ public class TsFileRewriteToolTest {
       // add measurements into file schema
       try {
         tsFileWriter.registerTimeseries(
-            new Path(device, sensor),
-            new UnaryMeasurementSchema(sensor, TSDataType.INT64, TSEncoding.RLE));
+            new Path(device), new MeasurementSchema(sensor, TSDataType.INT64, TSEncoding.RLE));
       } catch (WriteProcessException e) {
         Assert.fail(e.getMessage());
       }
@@ -388,7 +417,7 @@ public class TsFileRewriteToolTest {
     List<TsFileResource> splitResource = new ArrayList<>();
     try {
       TsFileRewriteTool.rewriteTsFile(tsFileResource, splitResource);
-    } catch (IOException | WriteProcessException e) {
+    } catch (IOException | WriteProcessException | IllegalPathException e) {
       Assert.fail(e.getMessage());
     }
     Assert.assertEquals(2, splitResource.size());
@@ -407,7 +436,7 @@ public class TsFileRewriteToolTest {
   public void queryAndCheckTsFile(String tsFilePath, int index, String device, String sensor)
       throws IOException {
     try (TsFileSequenceReader reader = new TsFileSequenceReader(tsFilePath);
-        ReadOnlyTsFile readTsFile = new ReadOnlyTsFile(reader)) {
+        TsFileReader readTsFile = new TsFileReader(reader)) {
       ArrayList<Path> paths = new ArrayList<>();
       paths.add(new Path(device, sensor));
 
