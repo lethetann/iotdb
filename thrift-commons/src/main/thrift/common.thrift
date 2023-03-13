@@ -19,7 +19,9 @@
 
 namespace java org.apache.iotdb.common.rpc.thrift
 namespace py iotdb.thrift.common
+namespace go common
 
+// Define a set of ip:port address
 struct TEndPoint {
   1: required string ip
   2: required i32 port
@@ -34,7 +36,7 @@ struct TSStatus {
 }
 
 enum TConsensusGroupType {
-  PartitionRegion,
+  ConfigRegion,
   DataRegion,
   SchemaRegion
 }
@@ -57,14 +59,105 @@ struct TRegionReplicaSet {
   2: required list<TDataNodeLocation> dataNodeLocations
 }
 
+struct TNodeResource {
+  1: required i32 cpuCoreNum
+  2: required i64 maxMemory
+}
+
+struct TConfigNodeLocation {
+  1: required i32 configNodeId
+  2: required TEndPoint internalEndPoint
+  3: required TEndPoint consensusEndPoint
+}
+
 struct TDataNodeLocation {
   1: required i32 dataNodeId
-  // TEndPoint for DataNode's external rpc
-  2: required TEndPoint externalEndPoint
-  // TEndPoint for DataNode's internal rpc
+  // TEndPoint for DataNode's client rpc
+  2: required TEndPoint clientRpcEndPoint
+  // TEndPoint for DataNode's cluster internal rpc
   3: required TEndPoint internalEndPoint
-  // TEndPoint for transfering data between DataNodes
-  4: required TEndPoint dataBlockManagerEndPoint
-  // TEndPoint for DataNode's ConsensusLayer
-  5: required TEndPoint consensusEndPoint
+  // TEndPoint for exchange data between DataNodes
+  4: required TEndPoint mPPDataExchangeEndPoint
+  // TEndPoint for DataNode's dataRegion consensus protocol
+  5: required TEndPoint dataRegionConsensusEndPoint
+  // TEndPoint for DataNode's schemaRegion consensus protocol
+  6: required TEndPoint schemaRegionConsensusEndPoint
+}
+
+struct TDataNodeConfiguration {
+  1: required TDataNodeLocation location
+  2: required TNodeResource resource
+}
+
+enum TRegionMigrateFailedType {
+  AddPeerFailed,
+  RemovePeerFailed,
+  RemoveConsensusGroupFailed,
+  DeleteRegionFailed,
+  CreateRegionFailed
+}
+
+struct TFlushReq {
+   1: optional string isSeq
+   2: optional list<string> storageGroups
+}
+
+struct TSettleReq {
+   1: required list<string> paths
+}
+
+// for node management
+struct TSchemaNode {
+  1: required string nodeName
+  2: required byte nodeType
+}
+
+struct TSetTTLReq {
+  1: required list<string> storageGroupPathPattern
+  2: required i64 TTL
+}
+
+// for File
+struct TFile {
+  1: required string fileName
+  2: required binary file
+}
+
+struct TFilesResp {
+  1: required TSStatus status
+  2: required list<TFile> files
+}
+
+enum TAggregationType {
+  COUNT,
+  AVG,
+  SUM,
+  FIRST_VALUE,
+  LAST_VALUE,
+  MAX_TIME,
+  MIN_TIME,
+  MAX_VALUE,
+  MIN_VALUE,
+  EXTREME,
+  COUNT_IF,
+  TIME_DURATION
+}
+
+// for MLNode
+enum TrainingState {
+  PENDING,
+  RUNNING,
+  FINISHED,
+  FAILED,
+  DROPPING
+}
+
+enum ModelTask {
+  FORECAST
+}
+
+enum EvaluateMetric {
+  MSE,
+  MAE,
+  RMSE
 }

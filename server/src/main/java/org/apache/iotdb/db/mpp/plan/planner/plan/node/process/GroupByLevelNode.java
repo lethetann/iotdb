@@ -23,9 +23,15 @@ import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeType;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanVisitor;
 import org.apache.iotdb.db.mpp.plan.planner.plan.parameter.AggregationDescriptor;
+import org.apache.iotdb.db.mpp.plan.planner.plan.parameter.CrossSeriesAggregationDescriptor;
 import org.apache.iotdb.db.mpp.plan.planner.plan.parameter.GroupByTimeParameter;
+import org.apache.iotdb.db.mpp.plan.statement.component.Ordering;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import javax.annotation.Nullable;
+
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -46,58 +52,66 @@ import java.util.stream.Collectors;
  * <p>If the group by level parameter is [0, 2], then these two columns will not belong to one
  * bucket. And the total buckets are `root.*.d1.s1` and `root.*.d2.s1`
  */
-public class GroupByLevelNode extends AggregationNode {
+public class GroupByLevelNode extends MultiChildProcessNode {
 
-  // column name of each output column
-  private final List<String> outputColumnNames;
+  // The list of aggregate descriptors
+  // each GroupByLevelDescriptor will be output as one or two column of result TsBlock
+  protected List<CrossSeriesAggregationDescriptor> groupByLevelDescriptors;
+
+  // The parameter of `group by time`.
+  // Its value will be null if there is no `group by time` clause.
+  @Nullable protected GroupByTimeParameter groupByTimeParameter;
+
+  protected Ordering scanOrder;
 
   public GroupByLevelNode(
       PlanNodeId id,
       List<PlanNode> children,
-      List<AggregationDescriptor> aggregationDescriptorList,
-      List<String> outputColumnNames) {
-    super(id, aggregationDescriptorList);
-    this.children = children;
-    this.outputColumnNames = outputColumnNames;
+      List<CrossSeriesAggregationDescriptor> groupByLevelDescriptors,
+      GroupByTimeParameter groupByTimeParameter,
+      Ordering scanOrder) {
+    super(id, children);
+    this.groupByLevelDescriptors = groupByLevelDescriptors;
+    this.groupByTimeParameter = groupByTimeParameter;
+    this.scanOrder = scanOrder;
   }
 
   public GroupByLevelNode(
       PlanNodeId id,
-      List<AggregationDescriptor> aggregationDescriptorList,
+      List<CrossSeriesAggregationDescriptor> groupByLevelDescriptors,
       GroupByTimeParameter groupByTimeParameter,
-      List<String> outputColumnNames) {
-    super(id, aggregationDescriptorList, groupByTimeParameter);
-    this.outputColumnNames = outputColumnNames;
-    this.children = new ArrayList<>();
-  }
-
-  @Override
-  public List<PlanNode> getChildren() {
-    return children;
-  }
-
-  @Override
-  public void addChild(PlanNode child) {
-    this.children.add(child);
-  }
-
-  @Override
-  public int allowedChildCount() {
-    return CHILD_COUNT_NO_LIMIT;
+      Ordering scanOrder) {
+    super(id);
+    this.groupByLevelDescriptors = groupByLevelDescriptors;
+    this.groupByTimeParameter = groupByTimeParameter;
+    this.scanOrder = scanOrder;
   }
 
   @Override
   public PlanNode clone() {
     return new GroupByLevelNode(
-        getPlanNodeId(),
-        getAggregationDescriptorList(),
-        getGroupByTimeParameter(),
-        getOutputColumnNames());
+        getPlanNodeId(), getGroupByLevelDescriptors(), this.groupByTimeParameter, this.scanOrder);
+  }
+
+  @Override
+  public PlanNode createSubNode(int subNodeId, int startIndex, int endIndex) {
+    return new HorizontallyConcatNode(
+        new PlanNodeId(String.format("%s-%s", getPlanNodeId(), subNodeId)),
+        new ArrayList<>(children.subList(startIndex, endIndex)));
+  }
+
+  public List<CrossSeriesAggregationDescriptor> getGroupByLevelDescriptors() {
+    return groupByLevelDescriptors;
+  }
+
+  public void setGroupByLevelDescriptors(
+      List<CrossSeriesAggregationDescriptor> groupByLevelDescriptors) {
+    this.groupByLevelDescriptors = groupByLevelDescriptors;
   }
 
   @Override
   public List<String> getOutputColumnNames() {
-    return aggregationDescriptorList.stream()
+    return groupByLevelDescriptors.stream()
         .map(AggregationDescriptor::getOutputColumnNames)
         .flatMap(List::stream)
         .collect(Collectors.toList());
@@ -111,9 +125,9 @@ public class GroupByLevelNode extends AggregationNode {
   @Override
   protected void serializeAttributes(ByteBuffer byteBuffer) {
     PlanNodeType.GROUP_BY_LEVEL.serialize(byteBuffer);
-    ReadWriteIOUtils.write(aggregationDescriptorList.size(), byteBuffer);
-    for (AggregationDescriptor aggregationDescriptor : aggregationDescriptorList) {
-      aggregationDescriptor.serialize(byteBuffer);
+    ReadWriteIOUtils.write(groupByLevelDescriptors.size(), byteBuffer);
+    for (CrossSeriesAggregationDescriptor groupByLevelDescriptor : groupByLevelDescriptors) {
+      groupByLevelDescriptor.serialize(byteBuffer);
     }
     if (groupByTimeParameter == null) {
       ReadWriteIOUtils.write((byte) 0, byteBuffer);
@@ -121,17 +135,30 @@ public class GroupByLevelNode extends AggregationNode {
       ReadWriteIOUtils.write((byte) 1, byteBuffer);
       groupByTimeParameter.serialize(byteBuffer);
     }
-    ReadWriteIOUtils.write(outputColumnNames.size(), byteBuffer);
-    for (String outputColumnName : outputColumnNames) {
-      ReadWriteIOUtils.write(outputColumnName, byteBuffer);
+    ReadWriteIOUtils.write(scanOrder.ordinal(), byteBuffer);
+  }
+
+  @Override
+  protected void serializeAttributes(DataOutputStream stream) throws IOException {
+    PlanNodeType.GROUP_BY_LEVEL.serialize(stream);
+    ReadWriteIOUtils.write(groupByLevelDescriptors.size(), stream);
+    for (CrossSeriesAggregationDescriptor groupByLevelDescriptor : groupByLevelDescriptors) {
+      groupByLevelDescriptor.serialize(stream);
     }
+    if (groupByTimeParameter == null) {
+      ReadWriteIOUtils.write((byte) 0, stream);
+    } else {
+      ReadWriteIOUtils.write((byte) 1, stream);
+      groupByTimeParameter.serialize(stream);
+    }
+    ReadWriteIOUtils.write(scanOrder.ordinal(), stream);
   }
 
   public static GroupByLevelNode deserialize(ByteBuffer byteBuffer) {
     int descriptorSize = ReadWriteIOUtils.readInt(byteBuffer);
-    List<AggregationDescriptor> aggregationDescriptorList = new ArrayList<>();
+    List<CrossSeriesAggregationDescriptor> groupByLevelDescriptors = new ArrayList<>();
     while (descriptorSize > 0) {
-      aggregationDescriptorList.add(AggregationDescriptor.deserialize(byteBuffer));
+      groupByLevelDescriptors.add(CrossSeriesAggregationDescriptor.deserialize(byteBuffer));
       descriptorSize--;
     }
     byte isNull = ReadWriteIOUtils.readByte(byteBuffer);
@@ -139,15 +166,19 @@ public class GroupByLevelNode extends AggregationNode {
     if (isNull == 1) {
       groupByTimeParameter = GroupByTimeParameter.deserialize(byteBuffer);
     }
-    int outputColumnSize = ReadWriteIOUtils.readInt(byteBuffer);
-    List<String> outputColumnNames = new ArrayList<>();
-    while (outputColumnSize > 0) {
-      outputColumnNames.add(ReadWriteIOUtils.readString(byteBuffer));
-      outputColumnSize--;
-    }
+    Ordering scanOrder = Ordering.values()[ReadWriteIOUtils.readInt(byteBuffer)];
     PlanNodeId planNodeId = PlanNodeId.deserialize(byteBuffer);
     return new GroupByLevelNode(
-        planNodeId, aggregationDescriptorList, groupByTimeParameter, outputColumnNames);
+        planNodeId, groupByLevelDescriptors, groupByTimeParameter, scanOrder);
+  }
+
+  @Nullable
+  public GroupByTimeParameter getGroupByTimeParameter() {
+    return groupByTimeParameter;
+  }
+
+  public Ordering getScanOrder() {
+    return scanOrder;
   }
 
   @Override
@@ -162,11 +193,19 @@ public class GroupByLevelNode extends AggregationNode {
       return false;
     }
     GroupByLevelNode that = (GroupByLevelNode) o;
-    return outputColumnNames.equals(that.outputColumnNames) && children.equals(that.children);
+    return Objects.equals(groupByLevelDescriptors, that.groupByLevelDescriptors)
+        && Objects.equals(groupByTimeParameter, that.groupByTimeParameter)
+        && scanOrder == that.scanOrder;
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(super.hashCode(), outputColumnNames, children);
+    return Objects.hash(super.hashCode(), groupByLevelDescriptors, groupByTimeParameter, scanOrder);
+  }
+
+  public String toString() {
+    return String.format(
+        "GroupByLevelNode-%s: Output: %s, Input: %s",
+        getPlanNodeId(), getOutputColumnNames(), groupByLevelDescriptors.size());
   }
 }

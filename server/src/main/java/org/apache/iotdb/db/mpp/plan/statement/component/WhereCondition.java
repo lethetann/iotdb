@@ -19,25 +19,31 @@
 
 package org.apache.iotdb.db.mpp.plan.statement.component;
 
-import org.apache.iotdb.db.mpp.common.filter.QueryFilter;
+import org.apache.iotdb.db.mpp.plan.analyze.ExpressionAnalyzer;
+import org.apache.iotdb.db.mpp.plan.expression.Expression;
 import org.apache.iotdb.db.mpp.plan.statement.StatementNode;
 
 /** This class maintains information of {@code WHERE} clause. */
 public class WhereCondition extends StatementNode {
 
-  private QueryFilter queryFilter;
+  private Expression predicate;
 
   public WhereCondition() {}
 
-  public WhereCondition(QueryFilter queryFilter) {
-    this.queryFilter = queryFilter;
+  // cast functionName to lowercase in where predicate
+  public WhereCondition(Expression predicate) {
+    this.predicate = ExpressionAnalyzer.removeAliasFromExpression(predicate);
   }
 
-  public QueryFilter getQueryFilter() {
-    return queryFilter;
+  public Expression getPredicate() {
+    return predicate;
   }
 
-  public void setQueryFilter(QueryFilter queryFilter) {
-    this.queryFilter = queryFilter;
+  public void setPredicate(Expression predicate) {
+    this.predicate = ExpressionAnalyzer.removeAliasFromExpression(predicate);
+  }
+
+  public String toSQLString() {
+    return "WHERE " + predicate.toString();
   }
 }

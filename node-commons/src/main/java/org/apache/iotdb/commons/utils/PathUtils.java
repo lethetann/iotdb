@@ -18,13 +18,18 @@
  */
 package org.apache.iotdb.commons.utils;
 
+import org.apache.iotdb.commons.conf.IoTDBConstant;
 import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.exception.MetadataException;
 import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
-
-import org.apache.commons.lang.StringEscapeUtils;
+import org.apache.iotdb.tsfile.exception.PathParseException;
+import org.apache.iotdb.tsfile.read.common.parser.PathNodesGenerator;
+import org.apache.iotdb.tsfile.read.common.parser.PathVisitor;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class PathUtils {
 
@@ -33,66 +38,169 @@ public class PathUtils {
    * @return string array. ex, [root, ln]
    * @throws IllegalPathException if path isn't correct, the exception will throw
    */
-  public static String[] splitPathToDetachedPath(String path) throws IllegalPathException {
-    // NodeName is treated as identifier. When parsing identifier, unescapeJava is called.
-    // Therefore we call unescapeJava here.
-    path = StringEscapeUtils.unescapeJava(path);
-    if (path.endsWith(TsFileConstant.PATH_SEPARATOR)) {
+  public static String[] splitPathToDetachedNodes(String path) throws IllegalPathException {
+    if ("".equals(path)) {
+      return new String[] {};
+    }
+    try {
+      return PathNodesGenerator.splitPathToNodes(path);
+    } catch (PathParseException e) {
       throw new IllegalPathException(path);
     }
-    List<String> nodes = new ArrayList<>();
-    int startIndex = 0;
-    int endIndex;
-    int length = path.length();
-    for (int i = 0; i < length; i++) {
-      if (path.charAt(i) == TsFileConstant.PATH_SEPARATOR_CHAR) {
-        String node = path.substring(startIndex, i);
-        if (node.isEmpty()) {
-          throw new IllegalPathException(path);
-        }
-        nodes.add(node);
-        startIndex = i + 1;
-      } else if (path.charAt(i) == TsFileConstant.BACK_QUOTE) {
-        startIndex = i + 1;
-        endIndex = path.indexOf(TsFileConstant.BACK_QUOTE, startIndex);
-        if (endIndex == -1) {
-          // single '`', like root.sg.`s
-          throw new IllegalPathException(path);
-        }
-        while (endIndex != -1 && endIndex != length - 1) {
-          char afterQuote = path.charAt(endIndex + 1);
-          if (afterQuote == TsFileConstant.BACK_QUOTE) {
-            // for example, root.sg.```
-            if (endIndex == length - 2) {
-              throw new IllegalPathException(path);
-            }
-            endIndex = path.indexOf(TsFileConstant.BACK_QUOTE, endIndex + 2);
-          } else if (afterQuote == '.') {
-            break;
-          } else {
-            throw new IllegalPathException(path);
-          }
-        }
-        // replace `` with ` in a quoted identifier
-        String node = path.substring(startIndex, endIndex).replace("``", "`");
-        if (node.isEmpty()) {
-          throw new IllegalPathException(path);
-        }
+  }
 
-        nodes.add(node);
-        // skip the '.' after '`'
-        i = endIndex + 1;
-        startIndex = endIndex + 2;
+  public static String[] isLegalPath(String path) throws IllegalPathException {
+    try {
+      return PathNodesGenerator.splitPathToNodes(path);
+    } catch (PathParseException e) {
+      throw new IllegalPathException(path);
+    }
+  }
+
+  /**
+   * check whether measurement is legal according to syntax convention. Measurement can only be a
+   * single node name. The returned list is updated, could be different from the original list.
+   */
+  public static List<List<String>> checkIsLegalSingleMeasurementListsAndUpdate(
+      List<List<String>> measurementLists) throws MetadataException {
+    if (measurementLists == null) {
+      return null;
+    }
+    // skip checking duplicated measurements
+    Map<String, String> checkedMeasurements = new HashMap<>();
+    List<List<String>> res = new ArrayList<>();
+    for (List<String> measurements : measurementLists) {
+      res.add(checkLegalSingleMeasurementsAndSkipDuplicate(measurements, checkedMeasurements));
+    }
+    return res;
+  }
+
+  /**
+   * check whether measurement is legal according to syntax convention. Measurement can only be a
+   * single node name, use set to skip checking duplicated measurements
+   */
+  public static List<String> checkLegalSingleMeasurementsAndSkipDuplicate(
+      List<String> measurements, Map<String, String> checkedMeasurements) throws MetadataException {
+    if (measurements == null) {
+      return null;
+    }
+    List<String> res = new ArrayList<>();
+    for (String measurement : measurements) {
+      if (measurement == null) {
+        res.add(null);
+        continue;
+      }
+      if (checkedMeasurements.get(measurement) != null) {
+        res.add(checkedMeasurements.get(measurement));
+        continue;
+      }
+      String checked = checkAndReturnSingleMeasurement(measurement);
+      checkedMeasurements.put(measurement, checked);
+      res.add(checked);
+    }
+    return res;
+  }
+
+  /**
+   * check whether measurement is legal according to syntax convention. Measurement can only be a
+   * single node name.
+   */
+  public static List<String> checkIsLegalSingleMeasurementsAndUpdate(List<String> measurements)
+      throws MetadataException {
+    if (measurements == null) {
+      return null;
+    }
+    List<String> res = new ArrayList<>();
+    for (String measurement : measurements) {
+      if (measurement == null) {
+        continue;
+      }
+      res.add(checkAndReturnSingleMeasurement(measurement));
+    }
+    return res;
+  }
+
+  /**
+   * check whether measurement is legal according to syntax convention measurement could be like a.b
+   * (more than one node name), in template?
+   */
+  public static List<List<String>> checkIsLegalMeasurementListsAndUpdate(
+      List<List<String>> measurementLists) throws IllegalPathException {
+    if (measurementLists == null) {
+      return null;
+    }
+    List<List<String>> res = new ArrayList<>();
+    for (List<String> measurementList : measurementLists) {
+      res.add(checkIsLegalMeasurementsAndUpdate(measurementList));
+    }
+    return res;
+  }
+
+  /**
+   * check whether measurement is legal according to syntax convention measurement could be like a.b
+   * (more than one node name), in template?
+   */
+  public static List<String> checkIsLegalMeasurementsAndUpdate(List<String> measurements)
+      throws IllegalPathException {
+    if (measurements == null) {
+      return null;
+    }
+    List<String> res = new ArrayList<>();
+    for (String measurement : measurements) {
+      if (measurement != null) {
+        res.add(PathUtils.isLegalPath(measurement)[0]);
       }
     }
-    // last node
-    if (startIndex <= path.length() - 1) {
-      String node = path.substring(startIndex);
-      if (node.isEmpty()) {
-        throw new IllegalPathException(path);
-      }
-      nodes.add(node);
+    return res;
+  }
+
+  /** check a measurement and update it if needed to. for example: `sd` -> sd */
+  public static String checkAndReturnSingleMeasurement(String measurement)
+      throws IllegalPathException {
+    if (measurement == null) {
+      return null;
     }
-    return nodes.toArray(new String[0]);
+    if (measurement.startsWith(TsFileConstant.BACK_QUOTE_STRING)
+        && measurement.endsWith(TsFileConstant.BACK_QUOTE_STRING)) {
+      if (checkBackQuotes(measurement.substring(1, measurement.length() - 1))) {
+        return removeBackQuotesIfNecessary(measurement);
+      } else {
+        throw new IllegalPathException(measurement);
+      }
+    }
+    if (IoTDBConstant.reservedWords.contains(measurement.toUpperCase())
+        || isRealNumber(measurement)
+        || !TsFileConstant.NODE_NAME_PATTERN.matcher(measurement).matches()) {
+      throw new IllegalPathException(measurement);
+    }
+    return measurement;
+  }
+
+  /** Return true if the str is a real number. Examples: 1.0; +1.0; -1.0; 0011; 011e3; +23e-3 */
+  public static boolean isRealNumber(String str) {
+    return PathVisitor.isRealNumber(str);
+  }
+
+  public static boolean isStartWith(String deviceName, String storageGroup) {
+    return deviceName.equals(storageGroup) || deviceName.startsWith(storageGroup + ".");
+  }
+
+  /** Remove the back quotes of a measurement if necessary */
+  public static String removeBackQuotesIfNecessary(String measurement) {
+    String unWrapped = measurement.substring(1, measurement.length() - 1);
+    if (PathUtils.isRealNumber(unWrapped)
+        || !TsFileConstant.IDENTIFIER_PATTERN.matcher(unWrapped).matches()) {
+      return measurement;
+    } else {
+      return unWrapped;
+    }
+  }
+
+  private static boolean checkBackQuotes(String src) {
+    int num = src.length() - src.replace("`", "").length();
+    if (num % 2 == 1) {
+      return false;
+    }
+    return src.length() == (src.replace("``", "").length() + num);
   }
 }

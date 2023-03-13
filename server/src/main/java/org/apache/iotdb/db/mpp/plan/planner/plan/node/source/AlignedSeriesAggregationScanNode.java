@@ -20,16 +20,18 @@
 package org.apache.iotdb.db.mpp.plan.planner.plan.node.source;
 
 import org.apache.iotdb.common.rpc.thrift.TRegionReplicaSet;
-import org.apache.iotdb.commons.utils.ThriftCommonsSerDeUtils;
-import org.apache.iotdb.db.metadata.path.AlignedPath;
-import org.apache.iotdb.db.metadata.path.PathDeserializeUtil;
+import org.apache.iotdb.commons.path.AlignedPath;
+import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.commons.path.PathDeserializeUtil;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeType;
+import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeUtil;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanVisitor;
+import org.apache.iotdb.db.mpp.plan.planner.plan.node.process.AggregationNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.parameter.AggregationDescriptor;
 import org.apache.iotdb.db.mpp.plan.planner.plan.parameter.GroupByTimeParameter;
-import org.apache.iotdb.db.mpp.plan.statement.component.OrderBy;
+import org.apache.iotdb.db.mpp.plan.statement.component.Ordering;
 import org.apache.iotdb.tsfile.read.filter.basic.Filter;
 import org.apache.iotdb.tsfile.read.filter.factory.FilterFactory;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
@@ -38,32 +40,18 @@ import com.google.common.collect.ImmutableList;
 
 import javax.annotation.Nullable;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-public class AlignedSeriesAggregationScanNode extends SourceNode {
+public class AlignedSeriesAggregationScanNode extends SeriesAggregationSourceNode {
 
   // The paths of the target series which will be aggregated.
   private final AlignedPath alignedPath;
-
-  // The list of aggregate functions, each AggregateDescriptor will be output as one column in
-  // result TsBlock
-  private final List<AggregationDescriptor> aggregationDescriptorList;
-
-  // The order to traverse the data.
-  // Currently, we only support TIMESTAMP_ASC and TIMESTAMP_DESC here.
-  // The default order is TIMESTAMP_ASC, which means "order by timestamp asc"
-  private OrderBy scanOrder = OrderBy.TIMESTAMP_ASC;
-
-  // time filter for current series, could be null if doesn't exist
-  @Nullable private Filter timeFilter;
-
-  // The parameter of `group by time`
-  // Its value will be null if there is no `group by time` clause,
-  @Nullable private GroupByTimeParameter groupByTimeParameter;
 
   // The id of DataRegion where the node will run
   private TRegionReplicaSet regionReplicaSet;
@@ -72,31 +60,33 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
       PlanNodeId id,
       AlignedPath alignedPath,
       List<AggregationDescriptor> aggregationDescriptorList) {
-    super(id);
+    super(id, aggregationDescriptorList);
     this.alignedPath = alignedPath;
-    this.aggregationDescriptorList = aggregationDescriptorList;
+    this.aggregationDescriptorList =
+        AggregationNode.getDeduplicatedDescriptors(aggregationDescriptorList);
   }
 
   public AlignedSeriesAggregationScanNode(
       PlanNodeId id,
       AlignedPath alignedPath,
       List<AggregationDescriptor> aggregationDescriptorList,
-      OrderBy scanOrder) {
+      Ordering scanOrder,
+      @Nullable GroupByTimeParameter groupByTimeParameter) {
     this(id, alignedPath, aggregationDescriptorList);
     this.scanOrder = scanOrder;
+    this.groupByTimeParameter = groupByTimeParameter;
   }
 
   public AlignedSeriesAggregationScanNode(
       PlanNodeId id,
       AlignedPath alignedPath,
       List<AggregationDescriptor> aggregationDescriptorList,
-      OrderBy scanOrder,
+      Ordering scanOrder,
       @Nullable Filter timeFilter,
       @Nullable GroupByTimeParameter groupByTimeParameter,
       TRegionReplicaSet dataRegionReplicaSet) {
-    this(id, alignedPath, aggregationDescriptorList, scanOrder);
+    this(id, alignedPath, aggregationDescriptorList, scanOrder, groupByTimeParameter);
     this.timeFilter = timeFilter;
-    this.groupByTimeParameter = groupByTimeParameter;
     this.regionReplicaSet = dataRegionReplicaSet;
   }
 
@@ -104,19 +94,22 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
     return alignedPath;
   }
 
-  public List<AggregationDescriptor> getAggregationDescriptorList() {
-    return aggregationDescriptorList;
-  }
-
-  public OrderBy getScanOrder() {
+  @Override
+  public Ordering getScanOrder() {
     return scanOrder;
   }
 
+  @Override
   @Nullable
   public Filter getTimeFilter() {
     return timeFilter;
   }
 
+  public void setTimeFilter(@Nullable Filter timeFilter) {
+    this.timeFilter = timeFilter;
+  }
+
+  @Override
   @Nullable
   public GroupByTimeParameter getGroupByTimeParameter() {
     return groupByTimeParameter;
@@ -176,7 +169,7 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
 
   @Override
   public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
-    return visitor.visitAlignedSeriesAggregate(this, context);
+    return visitor.visitAlignedSeriesAggregationScan(this, context);
   }
 
   @Override
@@ -200,7 +193,29 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
       ReadWriteIOUtils.write((byte) 1, byteBuffer);
       groupByTimeParameter.serialize(byteBuffer);
     }
-    ThriftCommonsSerDeUtils.writeTRegionReplicaSet(regionReplicaSet, byteBuffer);
+  }
+
+  @Override
+  protected void serializeAttributes(DataOutputStream stream) throws IOException {
+    PlanNodeType.ALIGNED_SERIES_AGGREGATE_SCAN.serialize(stream);
+    alignedPath.serialize(stream);
+    ReadWriteIOUtils.write(aggregationDescriptorList.size(), stream);
+    for (AggregationDescriptor aggregationDescriptor : aggregationDescriptorList) {
+      aggregationDescriptor.serialize(stream);
+    }
+    ReadWriteIOUtils.write(scanOrder.ordinal(), stream);
+    if (timeFilter == null) {
+      ReadWriteIOUtils.write((byte) 0, stream);
+    } else {
+      ReadWriteIOUtils.write((byte) 1, stream);
+      timeFilter.serialize(stream);
+    }
+    if (groupByTimeParameter == null) {
+      ReadWriteIOUtils.write((byte) 0, stream);
+    } else {
+      ReadWriteIOUtils.write((byte) 1, stream);
+      groupByTimeParameter.serialize(stream);
+    }
   }
 
   public static AlignedSeriesAggregationScanNode deserialize(ByteBuffer byteBuffer) {
@@ -210,7 +225,7 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
     for (int i = 0; i < aggregateDescriptorSize; i++) {
       aggregationDescriptorList.add(AggregationDescriptor.deserialize(byteBuffer));
     }
-    OrderBy scanOrder = OrderBy.values()[ReadWriteIOUtils.readInt(byteBuffer)];
+    Ordering scanOrder = Ordering.values()[ReadWriteIOUtils.readInt(byteBuffer)];
     byte isNull = ReadWriteIOUtils.readByte(byteBuffer);
     Filter timeFilter = null;
     if (isNull == 1) {
@@ -221,7 +236,6 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
     if (isNull == 1) {
       groupByTimeParameter = GroupByTimeParameter.deserialize(byteBuffer);
     }
-    TRegionReplicaSet regionReplicaSet = ThriftCommonsSerDeUtils.readTRegionReplicaSet(byteBuffer);
     PlanNodeId planNodeId = PlanNodeId.deserialize(byteBuffer);
     return new AlignedSeriesAggregationScanNode(
         planNodeId,
@@ -230,7 +244,7 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
         scanOrder,
         timeFilter,
         groupByTimeParameter,
-        regionReplicaSet);
+        null);
   }
 
   @Override
@@ -263,5 +277,25 @@ public class AlignedSeriesAggregationScanNode extends SourceNode {
         timeFilter,
         groupByTimeParameter,
         regionReplicaSet);
+  }
+
+  @Override
+  public PartialPath getPartitionPath() {
+    return alignedPath;
+  }
+
+  @Override
+  public Filter getPartitionTimeFilter() {
+    return timeFilter;
+  }
+
+  @Override
+  public String toString() {
+    return String.format(
+        "AlignedSeriesAggregationScanNode-%s:[SeriesPath: %s, Descriptor: %s, DataRegion: %s]",
+        this.getPlanNodeId(),
+        this.getAlignedPath().getFormattedString(),
+        this.getAggregationDescriptorList(),
+        PlanNodeUtil.printRegionReplicaSet(getRegionReplicaSet()));
   }
 }

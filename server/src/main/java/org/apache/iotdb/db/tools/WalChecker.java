@@ -20,17 +20,16 @@ package org.apache.iotdb.db.tools;
 
 import org.apache.iotdb.commons.exception.IllegalPathException;
 import org.apache.iotdb.commons.file.SystemFileFactory;
-import org.apache.iotdb.db.exception.SystemCheckException;
 import org.apache.iotdb.db.wal.buffer.WALEntry;
-import org.apache.iotdb.db.wal.io.WALWriter;
-import org.apache.iotdb.db.wal.node.WALNode;
+import org.apache.iotdb.db.wal.buffer.WALEntryType;
+import org.apache.iotdb.db.wal.exception.WALException;
+import org.apache.iotdb.db.wal.utils.WALFileUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
-import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -44,7 +43,7 @@ public class WalChecker {
 
   private static final Logger logger = LoggerFactory.getLogger(WalChecker.class);
 
-  /** the root dir of wals, which should have wal directories of storage groups as its children. */
+  /** the root dir of wals, which should have wal directories of databases as its children. */
   private String walFolder;
 
   public WalChecker(String walFolder) {
@@ -55,22 +54,16 @@ public class WalChecker {
    * check the root wal dir and find the damaged files
    *
    * @return a list of damaged files.
-   * @throws SystemCheckException if the root wal dir does not exist.
+   * @throws WALException if the root wal dir does not exist.
    */
-  public List<File> doCheck() throws SystemCheckException {
+  public List<File> doCheck() throws WALException {
     File walFolderFile = SystemFileFactory.INSTANCE.getFile(walFolder);
     logger.info("Checking folder: {}", walFolderFile.getAbsolutePath());
     if (!walFolderFile.exists() || !walFolderFile.isDirectory()) {
-      throw new SystemCheckException(walFolder);
+      throw new WALException(walFolder);
     }
 
-    File[] walNodeFolders =
-        walFolderFile.listFiles(
-            (dir, name) -> {
-              File walNodeFolder = SystemFileFactory.INSTANCE.getFile(dir, name);
-              return walNodeFolder.isDirectory()
-                  && WALNode.WAL_NODE_FOLDER_PATTERN.matcher(name).find();
-            });
+    File[] walNodeFolders = walFolderFile.listFiles(File::isDirectory);
     if (walNodeFolders == null || walNodeFolders.length == 0) {
       logger.info("No sub-directories under the given directory, check ends");
       return Collections.emptyList();
@@ -80,7 +73,7 @@ public class WalChecker {
     for (int dirIndex = 0; dirIndex < walNodeFolders.length; dirIndex++) {
       File walNodeFolder = walNodeFolders[dirIndex];
       logger.info("Checking the No.{} directory {}", dirIndex, walNodeFolder.getName());
-      File[] walFiles = walNodeFolder.listFiles(WALWriter::walFilenameFilter);
+      File[] walFiles = WALFileUtils.listAllWALFiles(walNodeFolder);
       if (walFiles == null) {
         continue;
       }
@@ -94,19 +87,13 @@ public class WalChecker {
   }
 
   private boolean checkFile(File walFile) {
-    int totalSize = 0;
     try (DataInputStream logStream =
         new DataInputStream(new BufferedInputStream(new FileInputStream(walFile)))) {
       while (logStream.available() > 0) {
         WALEntry walEntry = WALEntry.deserialize(logStream);
-        totalSize += walEntry.serializedSize();
-      }
-    } catch (EOFException e) {
-      if (totalSize == walFile.length()) {
-        return true;
-      } else {
-        logger.error("{} fails the check because", walFile, e);
-        return false;
+        if (walEntry.getType() == WALEntryType.WAL_FILE_INFO_END_MARKER) {
+          return true;
+        }
       }
     } catch (FileNotFoundException e) {
       logger.debug("Wal file doesn't exist, skipping");
@@ -128,7 +115,7 @@ public class WalChecker {
   }
 
   /** @param args walRootDirectory */
-  public static void main(String[] args) throws SystemCheckException {
+  public static void main(String[] args) throws WALException {
     if (args.length < 1) {
       logger.error("No enough args: require the walRootDirectory");
       return;

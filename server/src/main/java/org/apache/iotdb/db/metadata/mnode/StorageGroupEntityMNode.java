@@ -18,15 +18,13 @@
  */
 package org.apache.iotdb.db.metadata.mnode;
 
-import org.apache.iotdb.confignode.rpc.thrift.TStorageGroupSchema;
-import org.apache.iotdb.db.metadata.logfile.MLogWriter;
-
-import java.io.IOException;
+import org.apache.iotdb.confignode.rpc.thrift.TDatabaseSchema;
+import org.apache.iotdb.db.metadata.mnode.visitor.MNodeVisitor;
 
 public class StorageGroupEntityMNode extends EntityMNode implements IStorageGroupMNode {
   /**
-   * when the data file in a storage group is older than dataTTL, it is considered invalid and will
-   * be eventually deleted.
+   * when the data file in a database is older than dataTTL, it is considered invalid and will be
+   * eventually deleted.
    */
   private long dataTTL;
 
@@ -63,10 +61,10 @@ public class StorageGroupEntityMNode extends EntityMNode implements IStorageGrou
   public void setTimePartitionInterval(long timePartitionInterval) {}
 
   @Override
-  public void setStorageGroupSchema(TStorageGroupSchema schema) {}
+  public void setStorageGroupSchema(TDatabaseSchema schema) {}
 
   @Override
-  public TStorageGroupSchema getStorageGroupSchema() {
+  public TDatabaseSchema getStorageGroupSchema() {
     return null;
   }
 
@@ -81,9 +79,12 @@ public class StorageGroupEntityMNode extends EntityMNode implements IStorageGrou
   }
 
   @Override
-  public void serializeTo(MLogWriter logWriter) throws IOException {
-    serializeChildren(logWriter);
+  public MNodeType getMNodeType(Boolean isConfig) {
+    return MNodeType.STORAGE_GROUP;
+  }
 
-    logWriter.serializeStorageGroupMNode(this);
+  @Override
+  public <R, C> R accept(MNodeVisitor<R, C> visitor, C context) {
+    return visitor.visitStorageGroupEntityMNode(this, context);
   }
 }

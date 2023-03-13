@@ -25,17 +25,21 @@ import org.apache.iotdb.db.conf.IoTDBDescriptor;
 import org.apache.iotdb.db.constant.TestConstant;
 import org.apache.iotdb.db.engine.memtable.IMemTable;
 import org.apache.iotdb.db.engine.memtable.PrimitiveMemTable;
-import org.apache.iotdb.db.qp.physical.crud.InsertTabletPlan;
+import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
+import org.apache.iotdb.db.mpp.plan.planner.plan.node.write.InsertTabletNode;
 import org.apache.iotdb.db.utils.EnvironmentUtils;
 import org.apache.iotdb.db.wal.checkpoint.MemTableInfo;
 import org.apache.iotdb.db.wal.io.WALReader;
-import org.apache.iotdb.db.wal.io.WALWriter;
 import org.apache.iotdb.db.wal.recover.CheckpointRecoverUtils;
+import org.apache.iotdb.db.wal.utils.WALFileStatus;
+import org.apache.iotdb.db.wal.utils.WALFileUtils;
 import org.apache.iotdb.db.wal.utils.WALMode;
 import org.apache.iotdb.db.wal.utils.listener.WALFlushListener;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.iotdb.tsfile.utils.Binary;
 import org.apache.iotdb.tsfile.utils.BitMap;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 
 import org.junit.After;
 import org.junit.Before;
@@ -68,11 +72,15 @@ public class WALNodeTest {
   private WALMode prevMode;
   private WALNode walNode;
 
+  private boolean isClusterMode;
+
   @Before
   public void setUp() throws Exception {
     EnvironmentUtils.cleanDir(logDirectory);
     prevMode = config.getWalMode();
+    isClusterMode = config.isClusterMode();
     config.setWalMode(WALMode.SYNC);
+    config.setClusterMode(true);
     walNode = new WALNode(identifier, logDirectory);
   }
 
@@ -80,6 +88,7 @@ public class WALNodeTest {
   public void tearDown() throws Exception {
     walNode.close();
     config.setWalMode(prevMode);
+    config.setClusterMode(isClusterMode);
     EnvironmentUtils.cleanDir(logDirectory);
   }
 
@@ -90,13 +99,13 @@ public class WALNodeTest {
     ExecutorService executorService = Executors.newFixedThreadPool(threadsNum);
     List<Future<Void>> futures = new ArrayList<>();
     List<WALFlushListener> walFlushListeners = Collections.synchronizedList(new ArrayList<>());
-    Set<InsertTabletPlan> expectedInsertTabletPlans = ConcurrentHashMap.newKeySet();
+    Set<InsertTabletNode> expectedInsertTabletNodes = ConcurrentHashMap.newKeySet();
     for (int i = 0; i < threadsNum; ++i) {
       int memTableId = i;
       Callable<Void> writeTask =
           () -> {
             try {
-              writeInsertTabletPlan(memTableId, expectedInsertTabletPlans, walFlushListeners);
+              writeInsertTabletNode(memTableId, expectedInsertTabletNodes, walFlushListeners);
             } catch (IllegalPathException e) {
               fail();
             }
@@ -115,18 +124,18 @@ public class WALNodeTest {
     }
     Thread.sleep(1_000);
     // check .wal files
-    File[] walFiles = new File(logDirectory).listFiles(WALWriter::walFilenameFilter);
-    Set<InsertTabletPlan> actualInsertTabletPlans = new HashSet<>();
+    File[] walFiles = WALFileUtils.listAllWALFiles(new File(logDirectory));
+    Set<InsertTabletNode> actualInsertTabletNodes = new HashSet<>();
     if (walFiles != null) {
       for (File walFile : walFiles) {
         try (WALReader walReader = new WALReader(walFile)) {
           while (walReader.hasNext()) {
-            actualInsertTabletPlans.add((InsertTabletPlan) walReader.next().getValue());
+            actualInsertTabletNodes.add((InsertTabletNode) walReader.next().getValue());
           }
         }
       }
     }
-    assertEquals(expectedInsertTabletPlans, actualInsertTabletPlans);
+    assertEquals(expectedInsertTabletNodes, actualInsertTabletNodes);
     // check flush listeners
     try {
       for (WALFlushListener walFlushListener : walFlushListeners) {
@@ -137,30 +146,31 @@ public class WALNodeTest {
     }
   }
 
-  private void writeInsertTabletPlan(
+  private void writeInsertTabletNode(
       int memTableId,
-      Set<InsertTabletPlan> expectedInsertTabletPlans,
+      Set<InsertTabletNode> expectedInsertTabletNodes,
       List<WALFlushListener> walFlushListeners)
       throws IllegalPathException {
     for (int i = 0; i < 100; ++i) {
-      InsertTabletPlan insertTabletPlan =
-          getInsertTabletPlan(devicePath + memTableId, new long[] {i});
-      expectedInsertTabletPlans.add(insertTabletPlan);
+      InsertTabletNode insertTabletNode =
+          getInsertTabletNode(devicePath + memTableId, new long[] {i});
+      expectedInsertTabletNodes.add(insertTabletNode);
       WALFlushListener walFlushListener =
-          walNode.log(memTableId, insertTabletPlan, 0, insertTabletPlan.getRowCount());
+          walNode.log(memTableId, insertTabletNode, 0, insertTabletNode.getRowCount());
       walFlushListeners.add(walFlushListener);
     }
   }
 
-  private InsertTabletPlan getInsertTabletPlan(String devicePath, long[] times)
+  private InsertTabletNode getInsertTabletNode(String devicePath, long[] times)
       throws IllegalPathException {
-    List<Integer> dataTypes = new ArrayList<>();
-    dataTypes.add(TSDataType.DOUBLE.ordinal());
-    dataTypes.add(TSDataType.FLOAT.ordinal());
-    dataTypes.add(TSDataType.INT64.ordinal());
-    dataTypes.add(TSDataType.INT32.ordinal());
-    dataTypes.add(TSDataType.BOOLEAN.ordinal());
-    dataTypes.add(TSDataType.TEXT.ordinal());
+    String[] measurements = new String[] {"s1", "s2", "s3", "s4", "s5", "s6"};
+    TSDataType[] dataTypes = new TSDataType[6];
+    dataTypes[0] = TSDataType.DOUBLE;
+    dataTypes[1] = TSDataType.FLOAT;
+    dataTypes[2] = TSDataType.INT64;
+    dataTypes[3] = TSDataType.INT32;
+    dataTypes[4] = TSDataType.BOOLEAN;
+    dataTypes[5] = TSDataType.TEXT;
 
     Object[] columns = new Object[6];
     columns[0] = new double[times.length];
@@ -171,32 +181,39 @@ public class WALNodeTest {
     columns[5] = new Binary[times.length];
 
     for (int r = 0; r < times.length; r++) {
-      ((double[]) columns[0])[r] = 1.0 + r;
-      ((float[]) columns[1])[r] = 2 + r;
-      ((long[]) columns[2])[r] = 10000 + r;
+      ((double[]) columns[0])[r] = 1.0d + r;
+      ((float[]) columns[1])[r] = 2.0f + r;
+      ((long[]) columns[2])[r] = 10000L + r;
       ((int[]) columns[3])[r] = 100 + r;
       ((boolean[]) columns[4])[r] = (r % 2 == 0);
       ((Binary[]) columns[5])[r] = new Binary("hh" + r);
     }
 
-    BitMap[] bitMaps = new BitMap[dataTypes.size()];
-    for (int i = 0; i < dataTypes.size(); i++) {
+    BitMap[] bitMaps = new BitMap[dataTypes.length];
+    for (int i = 0; i < dataTypes.length; i++) {
       if (bitMaps[i] == null) {
         bitMaps[i] = new BitMap(times.length);
       }
       bitMaps[i].mark(i % times.length);
     }
 
-    InsertTabletPlan insertTabletPlan =
-        new InsertTabletPlan(
+    InsertTabletNode insertTabletNode =
+        new InsertTabletNode(
+            new PlanNodeId(""),
             new PartialPath(devicePath),
-            new String[] {"s1", "s2", "s3", "s4", "s5", "s6"},
-            dataTypes);
-    insertTabletPlan.setTimes(times);
-    insertTabletPlan.setColumns(columns);
-    insertTabletPlan.setRowCount(times.length);
-    insertTabletPlan.setBitMaps(bitMaps);
-    return insertTabletPlan;
+            false,
+            measurements,
+            dataTypes,
+            times,
+            bitMaps,
+            columns,
+            times.length);
+    MeasurementSchema[] schemas = new MeasurementSchema[6];
+    for (int i = 0; i < 6; i++) {
+      schemas[i] = new MeasurementSchema(measurements[i], dataTypes[i], TSEncoding.PLAIN);
+    }
+    insertTabletNode.setMeasurementSchemas(schemas);
+    return insertTabletNode;
   }
 
   @Test
@@ -205,16 +222,16 @@ public class WALNodeTest {
     int threadsNum = 5;
     ExecutorService executorService = Executors.newFixedThreadPool(threadsNum);
     List<Future<Void>> futures = new ArrayList<>();
-    Map<Integer, MemTableInfo> expectedMemTableId2Info = new ConcurrentHashMap<>();
+    Map<Long, MemTableInfo> expectedMemTableId2Info = new ConcurrentHashMap<>();
     // create 10 memTables, and flush the first 5 of them
     int memTablesNum = 10;
     for (int i = 0; i < memTablesNum; ++i) {
       Callable<Void> writeTask =
           () -> {
             IMemTable memTable = new PrimitiveMemTable();
-            int memTableId = memTable.getMemTableId();
+            long memTableId = memTable.getMemTableId();
             String tsFilePath = logDirectory + File.separator + memTableId + ".tsfile";
-            int firstFileVersionId = walNode.getCurrentLogVersion();
+            long firstFileVersionId = walNode.getCurrentLogVersion();
             walNode.onMemTableCreated(memTable, tsFilePath);
             if (memTableId % 2 == 0) {
               walNode.onMemTableFlushed(memTable);
@@ -234,8 +251,8 @@ public class WALNodeTest {
       future.get();
     }
     // recover info from checkpoint file
-    Map<Integer, MemTableInfo> actualMemTableId2Info =
-        CheckpointRecoverUtils.recoverMemTableInfo(new File(logDirectory));
+    Map<Long, MemTableInfo> actualMemTableId2Info =
+        CheckpointRecoverUtils.recoverMemTableInfo(new File(logDirectory)).getMemTableId2Info();
     assertEquals(expectedMemTableId2Info, actualMemTableId2Info);
   }
 
@@ -245,25 +262,45 @@ public class WALNodeTest {
     // write until log is rolled
     long time = 0;
     IMemTable memTable = new PrimitiveMemTable();
-    int memTableId = memTable.getMemTableId();
+    long memTableId = memTable.getMemTableId();
     String tsFilePath = logDirectory + File.separator + memTableId + ".tsfile";
     walNode.onMemTableCreated(memTable, tsFilePath);
     while (walNode.getCurrentLogVersion() == 0) {
       ++time;
-      InsertTabletPlan insertTabletPlan =
-          getInsertTabletPlan(devicePath + memTableId, new long[] {time});
+      InsertTabletNode insertTabletNode =
+          getInsertTabletNode(devicePath + memTableId, new long[] {time});
       WALFlushListener walFlushListener =
-          walNode.log(memTableId, insertTabletPlan, 0, insertTabletPlan.getRowCount());
+          walNode.log(memTableId, insertTabletNode, 0, insertTabletNode.getRowCount());
       walFlushListeners.add(walFlushListener);
     }
     walNode.onMemTableFlushed(memTable);
     walNode.onMemTableCreated(new PrimitiveMemTable(), tsFilePath);
-    // check existence of _0.wal file
-    assertTrue(new File(logDirectory + File.separator + WALWriter.getLogFileName(0)).exists());
-    assertTrue(new File(logDirectory + File.separator + WALWriter.getLogFileName(1)).exists());
+    // check existence of _0-0-0.wal file and _1-0-1.wal file
+    assertTrue(
+        new File(
+                logDirectory
+                    + File.separator
+                    + WALFileUtils.getLogFileName(0, 0, WALFileStatus.CONTAINS_NONE_SEARCH_INDEX))
+            .exists());
+    assertTrue(
+        new File(
+                logDirectory
+                    + File.separator
+                    + WALFileUtils.getLogFileName(1, 0, WALFileStatus.CONTAINS_SEARCH_INDEX))
+            .exists());
     walNode.deleteOutdatedFiles();
-    assertFalse(new File(logDirectory + File.separator + WALWriter.getLogFileName(0)).exists());
-    assertTrue(new File(logDirectory + File.separator + WALWriter.getLogFileName(1)).exists());
+    assertFalse(
+        new File(
+                logDirectory
+                    + File.separator
+                    + WALFileUtils.getLogFileName(0, 0, WALFileStatus.CONTAINS_NONE_SEARCH_INDEX))
+            .exists());
+    assertTrue(
+        new File(
+                logDirectory
+                    + File.separator
+                    + WALFileUtils.getLogFileName(1, 0, WALFileStatus.CONTAINS_SEARCH_INDEX))
+            .exists());
     // check flush listeners
     try {
       for (WALFlushListener walFlushListener : walFlushListeners) {

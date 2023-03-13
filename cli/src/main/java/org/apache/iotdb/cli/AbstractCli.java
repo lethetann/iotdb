@@ -16,10 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.iotdb.cli;
 
 import org.apache.iotdb.exception.ArgsErrorException;
-import org.apache.iotdb.jdbc.AbstractIoTDBJDBCResultSet;
 import org.apache.iotdb.jdbc.IoTDBConnection;
 import org.apache.iotdb.jdbc.IoTDBJDBCResultSet;
 import org.apache.iotdb.rpc.IoTDBConnectionException;
@@ -81,6 +81,8 @@ public abstract class AbstractCli {
   private static final String MAX_PRINT_ROW_COUNT_NAME = "maxPrintRowCount";
   static final String RPC_COMPRESS_ARGS = "c";
   private static final String RPC_COMPRESS_NAME = "rpcCompressed";
+  static final String TIMEOUT_ARGS = "timeout";
+  private static final String TIMEOUT_NAME = "queryTimeout";
   static final String SET_MAX_DISPLAY_NUM = "set max_display_num";
   static final String SET_TIMESTAMP_DISPLAY = "set time_display_type";
   static final String SHOW_TIMESTAMP_DISPLAY = "show time_display_type";
@@ -99,6 +101,7 @@ public abstract class AbstractCli {
   private static final String IMPORT_CMD = "import";
   static int maxPrintRowCount = 1000;
   private static int fetchSize = 1000;
+  static int queryTimeout = 0;
   static String timestampPrecision = "ms";
   static String timeFormat = RpcUtils.DEFAULT_TIME_FORMAT;
   private static boolean continuePrint = false;
@@ -200,6 +203,16 @@ public abstract class AbstractCli {
             .desc("Rpc Compression enabled or not")
             .build();
     options.addOption(isRpcCompressed);
+
+    Option queryTimeout =
+        Option.builder(TIMEOUT_ARGS)
+            .argName(TIMEOUT_NAME)
+            .hasArg()
+            .desc(
+                "The timeout in second. "
+                    + "Using the configuration of server if it's not set (optional)")
+            .build();
+    options.addOption(queryTimeout);
     return options;
   }
 
@@ -235,6 +248,22 @@ public abstract class AbstractCli {
     }
   }
 
+  private static int setFetchSize(String specialCmd, String cmd) {
+    String[] values = specialCmd.split("=");
+    if (values.length != 2) {
+      println(String.format("Fetch size format error, please input like %s=10000", SET_FETCH_SIZE));
+      return CODE_ERROR;
+    }
+    try {
+      setFetchSize(cmd.split("=")[1]);
+    } catch (Exception e) {
+      println(String.format("Fetch size format error, %s", e.getMessage()));
+      return CODE_ERROR;
+    }
+    println("Fetch size has set to " + values[1].trim());
+    return CODE_OK;
+  }
+
   static void setMaxDisplayNumber(String maxDisplayNum) {
     long tmp = Long.parseLong(maxDisplayNum.trim());
     if (tmp > Integer.MAX_VALUE) {
@@ -243,6 +272,15 @@ public abstract class AbstractCli {
       continuePrint = true;
     } else {
       maxPrintRowCount = Integer.parseInt(maxDisplayNum.trim());
+    }
+  }
+
+  static void setQueryTimeout(String timeoutString) {
+    long timeout = Long.parseLong(timeoutString.trim());
+    if (timeout > Integer.MAX_VALUE || timeout < 0) {
+      queryTimeout = 0;
+    } else {
+      queryTimeout = Integer.parseInt(timeoutString.trim());
     }
   }
 
@@ -303,7 +341,7 @@ public abstract class AbstractCli {
     }
   }
 
-  static void displayLogo(String version) {
+  static void displayLogo(String version, String buildInfo) {
     println(
         " _____       _________  ______   ______    \n"
             + "|_   _|     |  _   _  ||_   _ `.|_   _ \\   \n"
@@ -312,6 +350,9 @@ public abstract class AbstractCli {
             + " _| |_| \\__. | _| |_    _| |_.' /_| |__) | \n"
             + "|_____|'.__.' |_____|  |______.'|_______/  version "
             + version
+            + " (Build: "
+            + (buildInfo != null ? buildInfo : "UNKNOWN")
+            + ")"
             + "\n"
             + "                                           \n");
   }
@@ -415,8 +456,8 @@ public abstract class AbstractCli {
   }
 
   /**
-   * if cli has not specified a zondId, it will be set to cli's system timezone by default otherwise
-   * for insert and query accuracy cli should set timezone the same for all sessions
+   * if cli has not specified a zoneId, it will be set to cli's system timezone by default otherwise
+   * for insert and query accuracy cli should set timezone the same for all sessions.
    *
    * @param specialCmd
    * @param cmd
@@ -436,22 +477,6 @@ public abstract class AbstractCli {
       return CODE_ERROR;
     }
     println("Time zone has set to " + values[1].trim());
-    return CODE_OK;
-  }
-
-  private static int setFetchSize(String specialCmd, String cmd) {
-    String[] values = specialCmd.split("=");
-    if (values.length != 2) {
-      println(String.format("Fetch size format error, please input like %s=10000", SET_FETCH_SIZE));
-      return CODE_ERROR;
-    }
-    try {
-      setFetchSize(cmd.split("=")[1]);
-    } catch (Exception e) {
-      println(String.format("Fetch size format error, %s", e.getMessage()));
-      return CODE_ERROR;
-    }
-    println("Fetch size has set to " + values[1].trim());
     return CODE_OK;
   }
 
@@ -552,7 +577,7 @@ public abstract class AbstractCli {
             }
           }
           // output tracing activity
-          if (((AbstractIoTDBJDBCResultSet) resultSet).isSetTracingInfo()) {
+          if (((IoTDBJDBCResultSet) resultSet).isSetTracingInfo()) {
             maxSizeList = new ArrayList<>(2);
             lists = cacheTracingInfo(resultSet, maxSizeList);
             outputTracingInfo(lists, maxSizeList);
@@ -571,14 +596,14 @@ public abstract class AbstractCli {
   }
 
   /**
-   * cache all results
+   * cache all results.
    *
    * @param resultSet jdbc resultSet
    * @param maxSizeList the longest result of every column
    * @param columnCount the number of column
    * @param resultSetMetaData jdbc resultSetMetaData
    * @param zoneId your time zone
-   * @return List<List<String>> result
+   * @return {@literal List<List<String>> result}
    * @throws SQLException throw exception
    */
   @SuppressWarnings("squid:S3776") // Suppress high Cognitive Complexity warning
@@ -597,10 +622,14 @@ public abstract class AbstractCli {
     }
 
     List<List<String>> lists = new ArrayList<>(columnCount);
+    int endTimeIndex = -1;
     if (resultSet instanceof IoTDBJDBCResultSet) {
       for (int i = 1; i <= columnCount; i++) {
         List<String> list = new ArrayList<>(maxPrintRowCount + 1);
         String columnLabel = resultSetMetaData.getColumnLabel(i);
+        if (columnLabel.equalsIgnoreCase("__endTime")) {
+          endTimeIndex = i;
+        }
         list.add(columnLabel);
         lists.add(list);
         int count = computeHANCount(columnLabel);
@@ -615,6 +644,10 @@ public abstract class AbstractCli {
             tmp =
                 RpcUtils.formatDatetime(
                     timeFormat, timestampPrecision, resultSet.getLong(TIMESTAMP_STR), zoneId);
+          } else if (endTimeIndex == i) {
+            tmp =
+                RpcUtils.formatDatetime(
+                    timeFormat, timestampPrecision, resultSet.getLong(i), zoneId);
           } else {
             tmp = resultSet.getString(i);
           }
@@ -672,15 +705,15 @@ public abstract class AbstractCli {
     lists.add(0, new ArrayList<>());
     lists.add(1, new ArrayList<>());
 
-    String ACTIVITY_STR = "Activity";
-    String ELAPSED_TIME_STR = "Elapsed Time";
-    lists.get(0).add(ACTIVITY_STR);
-    lists.get(1).add(ELAPSED_TIME_STR);
-    maxSizeList.add(0, ACTIVITY_STR.length());
-    maxSizeList.add(1, ELAPSED_TIME_STR.length());
+    String activityStr = "Activity";
+    String elapsedTimeStr = "Elapsed Time";
+    lists.get(0).add(activityStr);
+    lists.get(1).add(elapsedTimeStr);
+    maxSizeList.add(0, activityStr.length());
+    maxSizeList.add(1, elapsedTimeStr.length());
 
-    List<String> activityList = ((AbstractIoTDBJDBCResultSet) resultSet).getActivityList();
-    List<Long> elapsedTimeList = ((AbstractIoTDBJDBCResultSet) resultSet).getElapsedTimeList();
+    List<String> activityList = ((IoTDBJDBCResultSet) resultSet).getActivityList();
+    List<Long> elapsedTimeList = ((IoTDBJDBCResultSet) resultSet).getElapsedTimeList();
     String[] statisticsInfoList = {
       "seriesPathNum", "seqFileNum", "unSeqFileNum", "seqChunkInfo", "unSeqChunkInfo", "pageNumInfo"
     };
@@ -690,7 +723,7 @@ public abstract class AbstractCli {
       if (i == activityList.size() - 1) {
         // cache Statistics
         for (String infoName : statisticsInfoList) {
-          String info = ((AbstractIoTDBJDBCResultSet) resultSet).getStatisticsInfoByName(infoName);
+          String info = ((IoTDBJDBCResultSet) resultSet).getStatisticsInfoByName(infoName);
           lists.get(0).add(info);
           lists.get(1).add("");
           if (info.length() > maxSizeList.get(0)) {

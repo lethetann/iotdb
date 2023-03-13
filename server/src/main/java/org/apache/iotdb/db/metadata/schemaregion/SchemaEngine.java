@@ -20,14 +20,22 @@
 package org.apache.iotdb.db.metadata.schemaregion;
 
 import org.apache.iotdb.commons.concurrent.IoTDBThreadPoolFactory;
+import org.apache.iotdb.commons.concurrent.threadpool.ScheduledExecutorUtil;
 import org.apache.iotdb.commons.consensus.SchemaRegionId;
+import org.apache.iotdb.commons.exception.IllegalPathException;
 import org.apache.iotdb.commons.exception.MetadataException;
 import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.commons.utils.FileUtils;
+import org.apache.iotdb.commons.utils.TestOnly;
+import org.apache.iotdb.consensus.ConsensusFactory;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.metadata.mnode.IStorageGroupMNode;
-import org.apache.iotdb.db.metadata.storagegroup.IStorageGroupSchemaManager;
-import org.apache.iotdb.db.metadata.storagegroup.StorageGroupSchemaManager;
+import org.apache.iotdb.db.metadata.metric.SchemaMetricManager;
+import org.apache.iotdb.db.metadata.rescon.CachedSchemaEngineStatistics;
+import org.apache.iotdb.db.metadata.rescon.ISchemaEngineStatistics;
+import org.apache.iotdb.db.metadata.rescon.MemSchemaEngineStatistics;
+import org.apache.iotdb.db.metadata.rescon.SchemaResourceManager;
+import org.apache.iotdb.external.api.ISeriesNumerMonitor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,26 +43,34 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ServiceLoader;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 // manage all the schemaRegion in this dataNode
 public class SchemaEngine {
 
-  private static IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
-
-  private final IStorageGroupSchemaManager localStorageGroupSchemaManager =
-      StorageGroupSchemaManager.getInstance();
-
-  private Map<SchemaRegionId, ISchemaRegion> schemaRegionMap;
-  private SchemaEngineMode schemaRegionStoredMode;
   private static final Logger logger = LoggerFactory.getLogger(SchemaEngine.class);
+
+  private static final IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
+
+  private final SchemaRegionLoader schemaRegionLoader;
+
+  private volatile Map<SchemaRegionId, ISchemaRegion> schemaRegionMap;
+
+  private ScheduledExecutorService timedForceMLogThread;
+
+  // seriesNumberMonitor may be null
+  private ISeriesNumerMonitor seriesNumerMonitor = null;
+
+  private ISchemaEngineStatistics schemaEngineStatistics;
 
   private static class SchemaEngineManagerHolder {
 
@@ -63,26 +79,72 @@ public class SchemaEngine {
     private SchemaEngineManagerHolder() {}
   }
 
-  private SchemaEngine() {}
+  private SchemaEngine() {
+
+    schemaRegionLoader = new SchemaRegionLoader();
+
+    // init ISeriesNumerMonitor if there is.
+    // each mmanager instance will generate an ISeriesNumerMonitor instance
+    // So, if you want to share the ISeriesNumerMonitor instance, pls change this part of code.
+    ServiceLoader<ISeriesNumerMonitor> monitorServiceLoader =
+        ServiceLoader.load(ISeriesNumerMonitor.class);
+    for (ISeriesNumerMonitor loader : monitorServiceLoader) {
+      if (this.seriesNumerMonitor != null) {
+        // it means there is more than one ISeriesNumerMonitor implementation.
+        logger.warn("There are more than one ISeriesNumerMonitor implementation. pls check.");
+      }
+      logger.info("Will set seriesNumerMonitor from {} ", loader.getClass().getName());
+      this.seriesNumerMonitor = loader;
+    }
+  }
 
   public static SchemaEngine getInstance() {
     return SchemaEngineManagerHolder.INSTANCE;
   }
 
-  public Map<PartialPath, List<SchemaRegionId>> init() throws MetadataException {
-    schemaRegionMap = new ConcurrentHashMap<>();
-    schemaRegionStoredMode = SchemaEngineMode.valueOf(config.getSchemaEngineMode());
-    logger.info("used schema engine mode: {}.", schemaRegionStoredMode);
+  public void init() {
+    logger.info("used schema engine mode: {}.", config.getSchemaEngineMode());
 
-    return initSchemaRegion();
+    schemaRegionLoader.init(config.getSchemaEngineMode());
+
+    initSchemaEngineStatistics();
+    SchemaResourceManager.initSchemaResource(schemaEngineStatistics);
+    // CachedSchemaEngineMetric depend on CacheMemoryManager, so it should be initialized after
+    // CacheMemoryManager
+    SchemaMetricManager.getInstance().init(schemaEngineStatistics);
+
+    schemaRegionMap = new ConcurrentHashMap<>();
+
+    initSchemaRegion();
+
+    if (!(config.isClusterMode()
+            && config
+                .getSchemaRegionConsensusProtocolClass()
+                .equals(ConsensusFactory.RATIS_CONSENSUS))
+        && config.getSyncMlogPeriodInMs() != 0) {
+      timedForceMLogThread =
+          IoTDBThreadPoolFactory.newSingleThreadScheduledExecutor(
+              "SchemaEngine-TimedForceMLog-Thread");
+      ScheduledExecutorUtil.unsafelyScheduleAtFixedRate(
+          timedForceMLogThread,
+          this::forceMlog,
+          config.getSyncMlogPeriodInMs(),
+          config.getSyncMlogPeriodInMs(),
+          TimeUnit.MILLISECONDS);
+    }
   }
 
   /**
-   * Scan the storage group and schema region directories to recover schema regions and return the
+   * Scan the database and schema region directories to recover schema regions and return the
    * collected local schema partition info for localSchemaPartitionTable recovery.
    */
-  private Map<PartialPath, List<SchemaRegionId>> initSchemaRegion() throws MetadataException {
-    Map<PartialPath, List<SchemaRegionId>> partitionTable = new HashMap<>();
+  private void initSchemaRegion() {
+    File schemaDir = new File(config.getSchemaDir());
+    File[] sgDirList = schemaDir.listFiles();
+
+    if (sgDirList == null) {
+      return;
+    }
 
     // recover SchemaRegion concurrently
     ExecutorService schemaRegionRecoverPools =
@@ -90,9 +152,18 @@ public class SchemaEngine {
             Runtime.getRuntime().availableProcessors(), "SchemaRegion-recover-task");
     List<Future<ISchemaRegion>> futures = new ArrayList<>();
 
-    for (PartialPath storageGroup : localStorageGroupSchemaManager.getAllStorageGroupPaths()) {
-      List<SchemaRegionId> schemaRegionIdList = new ArrayList<>();
-      partitionTable.put(storageGroup, schemaRegionIdList);
+    for (File file : sgDirList) {
+      if (!file.isDirectory()) {
+        continue;
+      }
+
+      PartialPath storageGroup;
+      try {
+        storageGroup = new PartialPath(file.getName());
+      } catch (IllegalPathException illegalPathException) {
+        // not a legal sg dir
+        continue;
+      }
 
       File sgDir = new File(config.getSchemaDir(), storageGroup.getFullPath());
 
@@ -115,7 +186,6 @@ public class SchemaEngine {
         }
         futures.add(
             schemaRegionRecoverPools.submit(recoverSchemaRegionTask(storageGroup, schemaRegionId)));
-        schemaRegionIdList.add(schemaRegionId);
       }
     }
 
@@ -124,16 +194,23 @@ public class SchemaEngine {
         ISchemaRegion schemaRegion = future.get();
         schemaRegionMap.put(schemaRegion.getSchemaRegionId(), schemaRegion);
       } catch (ExecutionException | InterruptedException | RuntimeException e) {
-        logger.error("Something wrong happened during SchemaRegion recovery: " + e.getMessage());
+        logger.error("Something wrong happened during SchemaRegion recovery: {}", e.getMessage());
         e.printStackTrace();
       }
     }
     schemaRegionRecoverPools.shutdown();
+  }
 
-    return partitionTable;
+  private void initSchemaEngineStatistics() {
+    if (IoTDBDescriptor.getInstance().getConfig().getSchemaEngineMode().equals("Memory")) {
+      schemaEngineStatistics = new MemSchemaEngineStatistics();
+    } else {
+      schemaEngineStatistics = new CachedSchemaEngineStatistics();
+    }
   }
 
   public void forceMlog() {
+    Map<SchemaRegionId, ISchemaRegion> schemaRegionMap = this.schemaRegionMap;
     if (schemaRegionMap != null) {
       for (ISchemaRegion schemaRegion : schemaRegionMap.values()) {
         schemaRegion.forceMlog();
@@ -142,13 +219,26 @@ public class SchemaEngine {
   }
 
   public void clear() {
+    schemaRegionLoader.clear();
+
+    // clearSchemaResource will shut down release and flush task in Schema_File mode, which must be
+    // down before clear schema region
+    SchemaResourceManager.clearSchemaResource();
+    if (timedForceMLogThread != null) {
+      timedForceMLogThread.shutdown();
+      timedForceMLogThread = null;
+    }
+
     if (schemaRegionMap != null) {
+      // SchemaEngineStatistics will be clear after clear all schema region
       for (ISchemaRegion schemaRegion : schemaRegionMap.values()) {
         schemaRegion.clear();
       }
       schemaRegionMap.clear();
       schemaRegionMap = null;
     }
+    // SchemaMetric should be cleared lastly
+    SchemaMetricManager.getInstance().clear();
   }
 
   public ISchemaRegion getSchemaRegion(SchemaRegionId regionId) {
@@ -185,14 +275,14 @@ public class SchemaEngine {
     return () -> {
       long timeRecord = System.currentTimeMillis();
       try {
-        // TODO: handle duplicated regionId across different storage group
+        // TODO: handle duplicated regionId across different database
         ISchemaRegion schemaRegion =
             createSchemaRegionWithoutExistenceCheck(storageGroup, schemaRegionId);
         timeRecord = System.currentTimeMillis() - timeRecord;
         logger.info(
-            String.format(
-                "Recover [%s] spend: %s ms",
-                storageGroup.concatNode(schemaRegionId.toString()), timeRecord));
+            "Recover [{}] spend: {} ms",
+            storageGroup.concatNode(schemaRegionId.toString()),
+            timeRecord);
         return schemaRegion;
       } catch (MetadataException e) {
         logger.error(
@@ -205,35 +295,56 @@ public class SchemaEngine {
   }
 
   private ISchemaRegion createSchemaRegionWithoutExistenceCheck(
-      PartialPath storageGroup, SchemaRegionId schemaRegionId) throws MetadataException {
-    ISchemaRegion schemaRegion = null;
-    this.localStorageGroupSchemaManager.ensureStorageGroup(storageGroup);
-    IStorageGroupMNode storageGroupMNode =
-        this.localStorageGroupSchemaManager.getStorageGroupNodeByStorageGroupPath(storageGroup);
-    switch (this.schemaRegionStoredMode) {
-      case Memory:
-        schemaRegion = new SchemaRegionMemoryImpl(storageGroup, schemaRegionId, storageGroupMNode);
-        break;
-      case Schema_File:
-        schemaRegion =
-            new SchemaRegionSchemaFileImpl(storageGroup, schemaRegionId, storageGroupMNode);
-        break;
-      case Rocksdb_based:
-        schemaRegion =
-            new RSchemaRegionLoader()
-                .loadRSchemaRegion(storageGroup, schemaRegionId, storageGroupMNode);
-        break;
-      default:
-        throw new UnsupportedOperationException(
-            String.format(
-                "This mode [%s] is not supported. Please check and modify it.",
-                schemaRegionStoredMode));
-    }
+      PartialPath database, SchemaRegionId schemaRegionId) throws MetadataException {
+    ISchemaRegionParams schemaRegionParams =
+        new SchemaRegionParams(
+            database, schemaRegionId, schemaEngineStatistics, seriesNumerMonitor);
+    ISchemaRegion schemaRegion = schemaRegionLoader.createSchemaRegion(schemaRegionParams);
+    SchemaMetricManager.getInstance().createSchemaRegionMetric(schemaRegion);
     return schemaRegion;
   }
 
-  public void deleteSchemaRegion(SchemaRegionId schemaRegionId) throws MetadataException {
-    schemaRegionMap.get(schemaRegionId).deleteSchemaRegion();
+  public synchronized void deleteSchemaRegion(SchemaRegionId schemaRegionId)
+      throws MetadataException {
+    ISchemaRegion schemaRegion = schemaRegionMap.get(schemaRegionId);
+    if (schemaRegion == null) {
+      logger.warn("SchemaRegion(id = {}) has been deleted, skiped", schemaRegionId);
+      return;
+    }
+    schemaRegion.deleteSchemaRegion();
+    SchemaMetricManager.getInstance().deleteSchemaRegionMetric(schemaRegionId.getId());
     schemaRegionMap.remove(schemaRegionId);
+
+    // check whether the sg dir is empty
+    File sgDir = new File(config.getSchemaDir(), schemaRegion.getStorageGroupFullPath());
+    File[] regionDirList =
+        sgDir.listFiles(
+            (dir, name) -> {
+              try {
+                Integer.parseInt(name);
+                return true;
+              } catch (NumberFormatException e) {
+                return false;
+              }
+            });
+    // remove the empty sg dir
+    if (regionDirList == null || regionDirList.length == 0) {
+      if (sgDir.exists()) {
+        FileUtils.deleteDirectory(sgDir);
+      }
+    }
+  }
+
+  public void setSeriesNumerMonitor(ISeriesNumerMonitor seriesNumerMonitor) {
+    this.seriesNumerMonitor = seriesNumerMonitor;
+  }
+
+  public int getSchemaRegionNumber() {
+    return schemaRegionMap == null ? 0 : schemaRegionMap.size();
+  }
+
+  @TestOnly
+  public ISchemaEngineStatistics getSchemaEngineStatistics() {
+    return schemaEngineStatistics;
   }
 }

@@ -30,15 +30,13 @@ import org.openjdk.jol.info.ClassLayout;
 import java.util.Arrays;
 import java.util.Iterator;
 
-import static io.airlift.slice.SizeOf.sizeOf;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Intermediate result for most of ExecOperators. The Tablet contains data from one or more columns
+ * Intermediate result for most of ExecOperators. The TsBlock contains data from one or more columns
  * and constructs them as a row based view The columns can be series, aggregation result for one
- * series or scalar value (such as deviceName). The Tablet also contains the metadata to describe
- * the columns.
+ * series or scalar value (such as deviceName).
  */
 public class TsBlock {
 
@@ -182,6 +180,10 @@ public class TsBlock {
     return new TsBlock(subTimeColumn, subValueColumns);
   }
 
+  public TsBlock skipFirst() {
+    return this.subTsBlock(1);
+  }
+
   public long getTimeByIndex(int index) {
     return timeColumn.getLong(index);
   }
@@ -192,6 +194,10 @@ public class TsBlock {
 
   public TimeColumn getTimeColumn() {
     return timeColumn;
+  }
+
+  public Column[] getValueColumns() {
+    return valueColumns;
   }
 
   public Column getColumn(int columnIndex) {
@@ -233,14 +239,14 @@ public class TsBlock {
   }
 
   /** Only used for the batch data of vector time series. */
-  public IBatchDataIterator getTsBlockIterator(int subIndex) {
-    return new AlignedTsBlockIterator(0, subIndex);
+  public TsBlockAlignedRowIterator getTsBlockAlignedRowIterator() {
+    return new TsBlockAlignedRowIterator(0);
   }
 
   public class TsBlockSingleColumnIterator implements IPointReader, IBatchDataIterator {
 
-    protected int rowIndex;
-    protected int columnIndex;
+    private int rowIndex;
+    private final int columnIndex;
 
     public TsBlockSingleColumnIterator(int rowIndex) {
       this.rowIndex = rowIndex;
@@ -347,7 +353,8 @@ public class TsBlock {
       int columnCount = getValueColumnCount();
       Object[] row = new Object[columnCount + 1];
       for (int i = 0; i < columnCount; ++i) {
-        row[i] = valueColumns[i].getObject(rowIndex);
+        final Column column = valueColumns[i];
+        row[i] = column.isNull(rowIndex) ? null : column.getObject(rowIndex);
       }
       row[columnCount] = timeColumn.getObject(rowIndex);
 
@@ -357,63 +364,128 @@ public class TsBlock {
     }
   }
 
-  private class AlignedTsBlockIterator extends TsBlockSingleColumnIterator {
+  private class TsBlockAlignedRowIterator implements IPointReader, IBatchDataIterator {
 
-    private final int subIndex;
+    private int rowIndex;
 
-    private AlignedTsBlockIterator(int index, int subIndex) {
-      super(index);
-      this.subIndex = subIndex;
+    public TsBlockAlignedRowIterator(int rowIndex) {
+      this.rowIndex = rowIndex;
     }
 
     @Override
     public boolean hasNext() {
-      while (super.hasNext() && currentValue() == null) {
-        super.next();
-      }
-      return super.hasNext();
+      return rowIndex < positionCount;
     }
 
     @Override
     public boolean hasNext(long minBound, long maxBound) {
-      while (super.hasNext() && currentValue() == null) {
+      while (hasNext()) {
         if (currentTime() < minBound || currentTime() >= maxBound) {
           break;
         }
-        super.next();
+        next();
       }
-      return super.hasNext();
+      return hasNext();
     }
 
     @Override
-    public Object currentValue() {
-      TsPrimitiveType v = valueColumns[subIndex].getTsPrimitiveType(rowIndex);
-      return v == null ? null : v.getValue();
+    public void next() {
+      rowIndex++;
+    }
+
+    @Override
+    public long currentTime() {
+      return timeColumn.getLong(rowIndex);
+    }
+
+    @Override
+    public TsPrimitiveType[] currentValue() {
+      TsPrimitiveType[] tsPrimitiveTypes = new TsPrimitiveType[valueColumns.length];
+      for (int i = 0; i < valueColumns.length; i++) {
+        if (!valueColumns[i].isNull(rowIndex)) {
+          tsPrimitiveTypes[i] = valueColumns[i].getTsPrimitiveType(rowIndex);
+        }
+      }
+      return tsPrimitiveTypes;
+    }
+
+    @Override
+    public void reset() {
+      rowIndex = 0;
     }
 
     @Override
     public int totalLength() {
-      // aligned timeseries' BatchData length() may return the length of time column
-      // we need traverse to VectorBatchDataIterator calculate the actual value column's length
-      int cnt = 0;
-      int indexSave = rowIndex;
-      while (hasNext()) {
-        cnt++;
+      return positionCount;
+    }
+
+    @Override
+    public boolean hasNextTimeValuePair() {
+      while (hasNext() && isCurrentValueAllNull()) {
         next();
       }
-      rowIndex = indexSave;
-      return cnt;
+      return hasNext();
+    }
+
+    @Override
+    public TimeValuePair nextTimeValuePair() {
+      TimeValuePair res = currentTimeValuePair();
+      next();
+      return res;
+    }
+
+    @Override
+    public TimeValuePair currentTimeValuePair() {
+      return new TimeValuePair(
+          timeColumn.getLong(rowIndex), new TsPrimitiveType.TsVector(currentValue()));
+    }
+
+    @Override
+    public void close() {}
+
+    public long getEndTime() {
+      return TsBlock.this.getEndTime();
+    }
+
+    public long getStartTime() {
+      return TsBlock.this.getStartTime();
+    }
+
+    public int getRowIndex() {
+      return rowIndex;
+    }
+
+    public void setRowIndex(int rowIndex) {
+      this.rowIndex = rowIndex;
+    }
+
+    private boolean isCurrentValueAllNull() {
+      for (int i = 0; i < valueColumns.length; i++) {
+        if (!valueColumns[i].isNull(rowIndex)) {
+          return false;
+        }
+      }
+      return true;
     }
   }
 
   private long updateRetainedSize() {
-    long retainedSizeInBytes = INSTANCE_SIZE + sizeOf(valueColumns);
+    long retainedSizeInBytes = INSTANCE_SIZE;
     retainedSizeInBytes += timeColumn.getRetainedSizeInBytes();
     for (Column column : valueColumns) {
       retainedSizeInBytes += column.getRetainedSizeInBytes();
     }
     this.retainedSizeInBytes = retainedSizeInBytes;
     return retainedSizeInBytes;
+  }
+
+  public int getTotalInstanceSize() {
+    int totalInstanceSize = INSTANCE_SIZE;
+    totalInstanceSize += timeColumn.getInstanceSize();
+    for (Column column : valueColumns) {
+      totalInstanceSize += column.getInstanceSize();
+    }
+    return totalInstanceSize;
   }
 
   private static int determinePositionCount(Column... columns) {

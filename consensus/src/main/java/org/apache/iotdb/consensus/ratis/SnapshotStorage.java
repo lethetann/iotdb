@@ -20,7 +20,7 @@ package org.apache.iotdb.consensus.ratis;
 
 import org.apache.iotdb.consensus.IStateMachine;
 
-import org.apache.ratis.io.MD5Hash;
+import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.FileInfo;
 import org.apache.ratis.server.storage.RaftStorage;
@@ -29,7 +29,6 @@ import org.apache.ratis.statemachine.SnapshotRetentionPolicy;
 import org.apache.ratis.statemachine.StateMachineStorage;
 import org.apache.ratis.statemachine.impl.FileListSnapshotInfo;
 import org.apache.ratis.util.FileUtils;
-import org.apache.ratis.util.MD5FileUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,34 +40,43 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/**
- * TODO: Warning, currently in Ratis 2.2.0, there is a bug in installSnapshot. In subsequent
- * installSnapshot, a follower may fail to install while the leader assume it success. This bug will
- * be triggered when the snapshot threshold is low. This is fixed in current Ratis Master, and
- * hopefully will be introduced in Ratis 2.3.0.
- */
 public class SnapshotStorage implements StateMachineStorage {
+  private final Logger logger = LoggerFactory.getLogger(SnapshotStorage.class);
   private final IStateMachine applicationStateMachine;
 
+  private static final String TMP_PREFIX = ".tmp.";
   private File stateMachineDir;
-  private final Logger logger = LoggerFactory.getLogger(SnapshotStorage.class);
+  private final RaftGroupId groupId;
+  private final ReentrantReadWriteLock snapshotCacheGuard = new ReentrantReadWriteLock();
+  private SnapshotInfo currentSnapshot = null;
 
-  public SnapshotStorage(IStateMachine applicationStateMachine) {
+  public SnapshotStorage(IStateMachine applicationStateMachine, RaftGroupId groupId) {
     this.applicationStateMachine = applicationStateMachine;
+    this.groupId = groupId;
   }
 
   @Override
   public void init(RaftStorage raftStorage) throws IOException {
-    this.stateMachineDir = raftStorage.getStorageDir().getStateMachineDir();
+    this.stateMachineDir =
+        Optional.ofNullable(getSnapshotDir())
+            .orElse(raftStorage.getStorageDir().getStateMachineDir());
+
+    if (!stateMachineDir.exists()) {
+      FileUtils.createDirectories(stateMachineDir);
+    }
+    updateSnapshotCache();
   }
 
   private Path[] getSortedSnapshotDirPaths() {
     ArrayList<Path> snapshotPaths = new ArrayList<>();
-    try (DirectoryStream<Path> stream = Files.newDirectoryStream(stateMachineDir.toPath())) {
+    try (DirectoryStream<Path> stream = Files.newDirectoryStream(getStateMachineDir().toPath())) {
       for (Path path : stream) {
-        snapshotPaths.add(path);
+        if (path.toFile().isDirectory() && !path.toFile().getName().startsWith(TMP_PREFIX)) {
+          snapshotPaths.add(path);
+        }
       }
     } catch (IOException exception) {
       logger.warn("cannot construct snapshot directory stream ", exception);
@@ -91,32 +99,65 @@ public class SnapshotStorage implements StateMachineStorage {
     if (snapshots == null || snapshots.length == 0) {
       return null;
     }
+
     return snapshots[snapshots.length - 1].toFile();
   }
 
-  @Override
-  public SnapshotInfo getLatestSnapshot() {
+  SnapshotInfo findLatestSnapshot() {
     File latestSnapshotDir = findLatestSnapshotDir();
     if (latestSnapshotDir == null) {
       return null;
     }
     TermIndex snapshotTermIndex = Utils.getTermIndexFromDir(latestSnapshotDir);
 
+    List<Path> actualSnapshotFiles = applicationStateMachine.getSnapshotFiles(latestSnapshotDir);
+    if (actualSnapshotFiles == null) {
+      return null;
+    }
+
     List<FileInfo> fileInfos = new ArrayList<>();
-    for (File file : Objects.requireNonNull(latestSnapshotDir.listFiles())) {
-      Path filePath = file.toPath();
-      MD5Hash fileHash = null;
-      try {
-        fileHash = MD5FileUtil.computeMd5ForFile(file);
-      } catch (IOException e) {
-        logger.error("read file info failed for snapshot file ", e);
+    for (Path file : actualSnapshotFiles) {
+      if (file.endsWith(".md5")) {
+        continue;
       }
-      FileInfo fileInfo = new FileInfo(filePath, fileHash);
+      FileInfo fileInfo = null;
+      try {
+        fileInfo = new FileInfo(file.toRealPath(), null);
+      } catch (IOException e) {
+        logger.warn("{} cannot resolve real path of {} due to {}", this, file, e);
+        return null;
+      }
       fileInfos.add(fileInfo);
     }
 
     return new FileListSnapshotInfo(
         fileInfos, snapshotTermIndex.getTerm(), snapshotTermIndex.getIndex());
+  }
+
+  /*
+  Snapshot cache will be updated upon:
+  1. takeSnapshot, when RaftServer takes a new snapshot
+  2. loadSnapshot, when RaftServer is asked to load a snapshot. loadSnapshot will be called when
+  (1) initialize, RaftServer first starts
+  (2) reinitialize, RaftServer resumes from pause. Leader will install a snapshot during pause.
+   */
+  void updateSnapshotCache() {
+    snapshotCacheGuard.writeLock().lock();
+    try {
+      currentSnapshot = findLatestSnapshot();
+    } finally {
+      snapshotCacheGuard.writeLock().unlock();
+    }
+  }
+
+  @Override
+  public SnapshotInfo getLatestSnapshot() {
+    snapshotCacheGuard.readLock().lock();
+    try {
+      return currentSnapshot;
+    } finally {
+      snapshotCacheGuard.readLock().unlock();
+    }
   }
 
   @Override
@@ -134,11 +175,32 @@ public class SnapshotStorage implements StateMachineStorage {
     }
   }
 
-  public File getStateMachineDir() {
+  File getStateMachineDir() {
     return stateMachineDir;
   }
 
-  public File getSnapshotDir(String snapshotMetadata) {
-    return new File(stateMachineDir.getAbsolutePath() + File.separator + snapshotMetadata);
+  File getSnapshotDir(String snapshotMetadata) {
+    return new File(getStateMachineDir().getAbsolutePath() + File.separator + snapshotMetadata);
+  }
+
+  File getSnapshotTmpDir(String snapshotMetadata) {
+    return new File(
+        getStateMachineDir().getAbsolutePath() + File.separator + TMP_PREFIX + snapshotMetadata);
+  }
+
+  String getSnapshotTmpId(String snapshotMetadata) {
+    return TMP_PREFIX + snapshotMetadata;
+  }
+
+  @Override
+  public File getSnapshotDir() {
+    return applicationStateMachine.getSnapshotRoot();
+  }
+
+  @Override
+  public File getTmpDir() {
+    return getSnapshotDir() == null
+        ? null
+        : new File(getSnapshotDir().getParentFile(), TMP_PREFIX + groupId.toString());
   }
 }

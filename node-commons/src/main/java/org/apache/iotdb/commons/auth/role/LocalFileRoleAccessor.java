@@ -22,8 +22,10 @@ import org.apache.iotdb.commons.auth.entity.PathPrivilege;
 import org.apache.iotdb.commons.auth.entity.Role;
 import org.apache.iotdb.commons.conf.IoTDBConstant;
 import org.apache.iotdb.commons.file.SystemFileFactory;
+import org.apache.iotdb.commons.utils.FileUtils;
 import org.apache.iotdb.commons.utils.IOUtils;
 
+import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,13 +34,14 @@ import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * This class store each role in a separate sequential file. Role file schema : Int32 role name size
@@ -53,16 +56,17 @@ public class LocalFileRoleAccessor implements IRoleAccessor {
   private static final Logger logger = LoggerFactory.getLogger(LocalFileRoleAccessor.class);
   private static final String TEMP_SUFFIX = ".temp";
   private static final String STRING_ENCODING = "utf-8";
+  private static final String roleSnapshotFileName = "system" + File.separator + "roles";
 
-  private String roleDirPath;
+  private final String roleDirPath;
 
   /**
    * Reused buffer for primitive types encoding/decoding, which aim to reduce memory fragments. Use
    * ThreadLocal for thread safety.
    */
-  private ThreadLocal<ByteBuffer> encodingBufferLocal = new ThreadLocal<>();
+  private final ThreadLocal<ByteBuffer> encodingBufferLocal = new ThreadLocal<>();
 
-  private ThreadLocal<byte[]> strBufferLocal = new ThreadLocal<>();
+  private final ThreadLocal<byte[]> strBufferLocal = new ThreadLocal<>();
 
   public LocalFileRoleAccessor(String roleDirPath) {
     this.roleDirPath = roleDirPath;
@@ -97,7 +101,6 @@ public class LocalFileRoleAccessor implements IRoleAccessor {
             IOUtils.readPathPrivilege(dataInputStream, STRING_ENCODING, strBufferLocal));
       }
       role.setPrivilegeList(pathPrivilegeList);
-
       return role;
     } catch (Exception e) {
       throw new IOException(e);
@@ -115,8 +118,14 @@ public class LocalFileRoleAccessor implements IRoleAccessor {
                 + role.getName()
                 + IoTDBConstant.PROFILE_SUFFIX
                 + TEMP_SUFFIX);
+    File roleDir = new File(roleDirPath);
+    if (!roleDir.exists()) {
+      if (!roleDir.mkdirs()) {
+        logger.error("Failed to create role dir {}", roleDirPath);
+      }
+    }
     try (BufferedOutputStream outputStream =
-        new BufferedOutputStream(new FileOutputStream(roleProfile))) {
+        new BufferedOutputStream(Files.newOutputStream(roleProfile.toPath()))) {
       try {
         IOUtils.writeString(outputStream, role.getName(), STRING_ENCODING, encodingBufferLocal);
 
@@ -178,6 +187,50 @@ public class LocalFileRoleAccessor implements IRoleAccessor {
       retList.addAll(set);
     }
     return retList;
+  }
+
+  @Override
+  public boolean processTakeSnapshot(File snapshotDir) throws TException, IOException {
+    SystemFileFactory systemFileFactory = SystemFileFactory.INSTANCE;
+    File roleFolder = systemFileFactory.getFile(roleDirPath);
+    File roleSnapshotDir = systemFileFactory.getFile(snapshotDir, roleSnapshotFileName);
+    File roleTmpSnapshotDir =
+        systemFileFactory.getFile(roleSnapshotDir.getAbsolutePath() + "-" + UUID.randomUUID());
+
+    boolean result = true;
+    try {
+      result = FileUtils.copyDir(roleFolder, roleTmpSnapshotDir);
+      result &= roleTmpSnapshotDir.renameTo(roleSnapshotDir);
+    } finally {
+      if (roleTmpSnapshotDir.exists() && !roleTmpSnapshotDir.delete()) {
+        FileUtils.deleteDirectory(roleTmpSnapshotDir);
+      }
+    }
+    return result;
+  }
+
+  @Override
+  public void processLoadSnapshot(File snapshotDir) throws TException, IOException {
+    SystemFileFactory systemFileFactory = SystemFileFactory.INSTANCE;
+    File roleFolder = systemFileFactory.getFile(roleDirPath);
+    File roleTmpFolder =
+        systemFileFactory.getFile(roleFolder.getAbsolutePath() + "-" + UUID.randomUUID());
+    File roleSnapshotDir = systemFileFactory.getFile(snapshotDir, roleSnapshotFileName);
+    if (roleSnapshotDir.exists()) {
+      try {
+        org.apache.commons.io.FileUtils.moveDirectory(roleFolder, roleTmpFolder);
+        if (!FileUtils.copyDir(roleSnapshotDir, roleFolder)) {
+          logger.error("Failed to load role folder snapshot and rollback.");
+          // rollback if failed to copy
+          FileUtils.deleteDirectory(roleFolder);
+          org.apache.commons.io.FileUtils.moveDirectory(roleTmpFolder, roleFolder);
+        }
+      } finally {
+        FileUtils.deleteDirectory(roleTmpFolder);
+      }
+    } else {
+      logger.info("There are no roles to load.");
+    }
   }
 
   @Override

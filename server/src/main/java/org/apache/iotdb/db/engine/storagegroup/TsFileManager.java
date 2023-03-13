@@ -21,7 +21,7 @@ package org.apache.iotdb.db.engine.storagegroup;
 
 import org.apache.iotdb.db.exception.WriteLockFailedException;
 import org.apache.iotdb.db.rescon.TsFileResourceManager;
-import org.apache.iotdb.db.sync.sender.manager.TsFileSyncManager;
+import org.apache.iotdb.db.sync.sender.manager.ISyncManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -45,7 +46,7 @@ import static org.apache.iotdb.tsfile.common.constant.TsFileConstant.TSFILE_SUFF
 public class TsFileManager {
   private static final Logger LOGGER = LoggerFactory.getLogger(TsFileManager.class);
   private String storageGroupName;
-  private String dataRegion;
+  private String dataRegionId;
   private String storageGroupDir;
 
   /** Serialize queries, delete resource files, compaction cleanup files */
@@ -53,18 +54,19 @@ public class TsFileManager {
 
   private String writeLockHolder;
   // time partition -> double linked list of tsfiles
-  private Map<Long, TsFileResourceList> sequenceFiles = new TreeMap<>();
-  private Map<Long, TsFileResourceList> unsequenceFiles = new TreeMap<>();
+  private TreeMap<Long, TsFileResourceList> sequenceFiles = new TreeMap<>();
+  private TreeMap<Long, TsFileResourceList> unsequenceFiles = new TreeMap<>();
 
   private List<TsFileResource> sequenceRecoverTsFileResources = new ArrayList<>();
   private List<TsFileResource> unsequenceRecoverTsFileResources = new ArrayList<>();
 
   private boolean allowCompaction = true;
+  private AtomicLong currentCompactionTaskSerialId = new AtomicLong(0);
 
-  public TsFileManager(String storageGroupName, String dataRegion, String storageGroupDir) {
+  public TsFileManager(String storageGroupName, String dataRegionId, String storageGroupDir) {
     this.storageGroupName = storageGroupName;
     this.storageGroupDir = storageGroupDir;
-    this.dataRegion = dataRegion;
+    this.dataRegionId = dataRegionId;
   }
 
   public List<TsFileResource> getTsFileList(boolean sequence) {
@@ -83,21 +85,21 @@ public class TsFileManager {
     }
   }
 
-  public TsFileResourceList getSequenceListByTimePartition(long timePartition) {
-    readLock();
+  public TsFileResourceList getOrCreateSequenceListByTimePartition(long timePartition) {
+    writeLock("getOrCreateSequenceListByTimePartition");
     try {
       return sequenceFiles.computeIfAbsent(timePartition, l -> new TsFileResourceList());
     } finally {
-      readUnlock();
+      writeUnlock();
     }
   }
 
-  public TsFileResourceList getUnsequenceListByTimePartition(long timePartition) {
-    readLock();
+  public TsFileResourceList getOrCreateUnsequenceListByTimePartition(long timePartition) {
+    writeLock("getOrCreateUnsequenceListByTimePartition");
     try {
       return unsequenceFiles.computeIfAbsent(timePartition, l -> new TsFileResourceList());
     } finally {
-      readUnlock();
+      writeUnlock();
     }
   }
 
@@ -143,13 +145,12 @@ public class TsFileManager {
    * first, if insert Pos = 1, then to the second.
    */
   public void insertToPartitionFileList(
-      TsFileResource tsFileResource, boolean sequence, int insertPos) {
+      TsFileResource tsFileResource, long timePartition, boolean sequence, int insertPos) {
     writeLock("add");
     try {
       Map<Long, TsFileResourceList> selectedMap = sequence ? sequenceFiles : unsequenceFiles;
       TsFileResourceList tsFileResources =
-          selectedMap.computeIfAbsent(
-              tsFileResource.getTimePartition(), o -> new TsFileResourceList());
+          selectedMap.computeIfAbsent(timePartition, o -> new TsFileResourceList());
       tsFileResources.set(insertPos, tsFileResource);
     } finally {
       writeUnlock();
@@ -222,14 +223,18 @@ public class TsFileManager {
       if (isTargetSequence) {
         // seq inner space compaction or cross space compaction
         for (TsFileResource resource : targetFileResources) {
-          TsFileResourceManager.getInstance().registerSealedTsFileResource(resource);
-          sequenceFiles.get(timePartition).keepOrderInsert(resource);
+          if (!resource.isDeleted()) {
+            TsFileResourceManager.getInstance().registerSealedTsFileResource(resource);
+            sequenceFiles.get(timePartition).keepOrderInsert(resource);
+          }
         }
       } else {
         // unseq inner space compaction
         for (TsFileResource resource : targetFileResources) {
-          TsFileResourceManager.getInstance().registerSealedTsFileResource(resource);
-          unsequenceFiles.get(timePartition).keepOrderInsert(resource);
+          if (!resource.isDeleted()) {
+            TsFileResourceManager.getInstance().registerSealedTsFileResource(resource);
+            unsequenceFiles.get(timePartition).keepOrderInsert(resource);
+          }
         }
       }
 
@@ -355,12 +360,12 @@ public class TsFileManager {
     this.allowCompaction = allowCompaction;
   }
 
-  public String getDataRegion() {
-    return dataRegion;
+  public String getDataRegionId() {
+    return dataRegionId;
   }
 
-  public void setDataRegion(String dataRegion) {
-    this.dataRegion = dataRegion;
+  public void setDataRegionId(String dataRegionId) {
+    this.dataRegionId = dataRegionId;
   }
 
   public List<TsFileResource> getSequenceRecoverTsFileResources() {
@@ -371,12 +376,12 @@ public class TsFileManager {
     return unsequenceRecoverTsFileResources;
   }
 
-  public List<File> collectHistoryTsFileForSync(long dataStartTime) {
+  public List<File> collectHistoryTsFileForSync(ISyncManager syncManager, long dataStartTime) {
     readLock();
     try {
       List<File> historyTsFiles = new ArrayList<>();
-      collectTsFile(historyTsFiles, getTsFileList(true), dataStartTime);
-      collectTsFile(historyTsFiles, getTsFileList(false), dataStartTime);
+      collectTsFile(historyTsFiles, getTsFileList(true), syncManager, dataStartTime);
+      collectTsFile(historyTsFiles, getTsFileList(false), syncManager, dataStartTime);
       return historyTsFiles;
     } finally {
       readUnlock();
@@ -384,8 +389,10 @@ public class TsFileManager {
   }
 
   private void collectTsFile(
-      List<File> historyTsFiles, List<TsFileResource> tsFileResources, long dataStartTime) {
-    TsFileSyncManager syncManager = TsFileSyncManager.getInstance();
+      List<File> historyTsFiles,
+      List<TsFileResource> tsFileResources,
+      ISyncManager syncManager,
+      long dataStartTime) {
 
     for (TsFileResource tsFileResource : tsFileResources) {
       if (tsFileResource.getFileEndTime() < dataStartTime) {
@@ -424,5 +431,25 @@ public class TsFileManager {
     } else {
       return cmp;
     }
+  }
+
+  public long getNextCompactionTaskId() {
+    return currentCompactionTaskSerialId.getAndIncrement();
+  }
+
+  public boolean hasNextTimePartition(long timePartition, boolean sequence) {
+    try {
+      return sequence
+          ? sequenceFiles.higherKey(timePartition) != null
+          : unsequenceFiles.higherKey(timePartition) != null;
+    } catch (NullPointerException e) {
+      return false;
+    }
+  }
+
+  // determine whether time partition is the latest(largest) or not
+  public boolean isLatestTimePartition(long timePartitionId) {
+    return (sequenceFiles.higherKey(timePartitionId) == null
+        && unsequenceFiles.higherKey(timePartitionId) == null);
   }
 }

@@ -19,20 +19,28 @@
 package org.apache.iotdb.commons.utils;
 
 import org.apache.iotdb.common.rpc.thrift.TConsensusGroupId;
+import org.apache.iotdb.common.rpc.thrift.TDataNodeConfiguration;
 import org.apache.iotdb.common.rpc.thrift.TDataNodeLocation;
 import org.apache.iotdb.common.rpc.thrift.TEndPoint;
 import org.apache.iotdb.common.rpc.thrift.TRegionReplicaSet;
+import org.apache.iotdb.common.rpc.thrift.TSchemaNode;
 import org.apache.iotdb.common.rpc.thrift.TSeriesPartitionSlot;
 import org.apache.iotdb.common.rpc.thrift.TTimePartitionSlot;
 import org.apache.iotdb.commons.exception.runtime.ThriftSerDeException;
+import org.apache.iotdb.confignode.rpc.thrift.TCreateCQReq;
+import org.apache.iotdb.confignode.rpc.thrift.TTimeSlotList;
+import org.apache.iotdb.rpc.ConfigurableTByteBuffer;
 
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
-import org.apache.thrift.transport.TByteBuffer;
+import org.apache.thrift.transport.TIOStreamTransport;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
 
+import java.io.DataOutputStream;
 import java.nio.ByteBuffer;
+
+import static org.apache.iotdb.rpc.TConfigurationConst.defaultTConfiguration;
 
 /** Utils for serialize and deserialize all the data struct defined by thrift-commons */
 public class ThriftCommonsSerDeUtils {
@@ -41,27 +49,33 @@ public class ThriftCommonsSerDeUtils {
     // Empty constructor
   }
 
+  private static TBinaryProtocol generateWriteProtocol(DataOutputStream stream)
+      throws TTransportException {
+    TTransport transport = new TIOStreamTransport(stream);
+    return new TBinaryProtocol(transport);
+  }
+
   private static TBinaryProtocol generateWriteProtocol(ByteBuffer buffer)
       throws TTransportException {
-    TTransport transport = new TByteBuffer(buffer);
+    TTransport transport = generateTByteBuffer(buffer);
     return new TBinaryProtocol(transport);
   }
 
   private static TBinaryProtocol generateReadProtocol(ByteBuffer buffer)
       throws TTransportException {
-    TTransport transport = new TByteBuffer(buffer);
+    TTransport transport = generateTByteBuffer(buffer);
     return new TBinaryProtocol(transport);
   }
 
-  public static void writeTEndPoint(TEndPoint endPoint, ByteBuffer buffer) {
+  public static void serializeTEndPoint(TEndPoint endPoint, DataOutputStream stream) {
     try {
-      endPoint.write(generateWriteProtocol(buffer));
+      endPoint.write(generateWriteProtocol(stream));
     } catch (TException e) {
       throw new ThriftSerDeException("Write TEndPoint failed: ", e);
     }
   }
 
-  public static TEndPoint readTEndPoint(ByteBuffer buffer) {
+  public static TEndPoint deserializeTEndPoint(ByteBuffer buffer) {
     TEndPoint endPoint = new TEndPoint();
     try {
       endPoint.read(generateReadProtocol(buffer));
@@ -71,15 +85,35 @@ public class ThriftCommonsSerDeUtils {
     return endPoint;
   }
 
-  public static void writeTDataNodeLocation(TDataNodeLocation dataNodeLocation, ByteBuffer buffer) {
+  public static void serializeTDataNodeConfiguration(
+      TDataNodeConfiguration dataNodeConfiguration, DataOutputStream stream) {
     try {
-      dataNodeLocation.write(generateWriteProtocol(buffer));
+      dataNodeConfiguration.write(generateWriteProtocol(stream));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Write TDataNodeConfiguration failed: ", e);
+    }
+  }
+
+  public static TDataNodeConfiguration deserializeTDataNodeConfiguration(ByteBuffer buffer) {
+    TDataNodeConfiguration dataNodeConfiguration = new TDataNodeConfiguration();
+    try {
+      dataNodeConfiguration.read(generateReadProtocol(buffer));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Read TDataNodeConfiguration failed: ", e);
+    }
+    return dataNodeConfiguration;
+  }
+
+  public static void serializeTDataNodeLocation(
+      TDataNodeLocation dataNodeLocation, DataOutputStream stream) {
+    try {
+      dataNodeLocation.write(generateWriteProtocol(stream));
     } catch (TException e) {
       throw new ThriftSerDeException("Write TDataNodeLocation failed: ", e);
     }
   }
 
-  public static TDataNodeLocation readTDataNodeLocation(ByteBuffer buffer) {
+  public static TDataNodeLocation deserializeTDataNodeLocation(ByteBuffer buffer) {
     TDataNodeLocation dataNodeLocation = new TDataNodeLocation();
     try {
       dataNodeLocation.read(generateReadProtocol(buffer));
@@ -89,16 +123,53 @@ public class ThriftCommonsSerDeUtils {
     return dataNodeLocation;
   }
 
-  public static void writeTSeriesPartitionSlot(
-      TSeriesPartitionSlot seriesPartitionSlot, ByteBuffer buffer) {
+  public static void serializeTCreateCQReq(TCreateCQReq createCQReq, DataOutputStream stream) {
     try {
-      seriesPartitionSlot.write(generateWriteProtocol(buffer));
+      createCQReq.write(generateWriteProtocol(stream));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Write TCreateCQReq failed: ", e);
+    }
+  }
+
+  public static TCreateCQReq deserializeTCreateCQReq(ByteBuffer buffer) {
+    TCreateCQReq createCQReq = new TCreateCQReq();
+    try {
+      createCQReq.read(generateReadProtocol(buffer));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Read TCreateCQReq failed: ", e);
+    }
+    return createCQReq;
+  }
+
+  public static void serializeTDataNodeInfo(
+      TDataNodeConfiguration dataNodeInfo, DataOutputStream stream) {
+    try {
+      dataNodeInfo.write(generateWriteProtocol(stream));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Write TDataNodeInfo failed: ", e);
+    }
+  }
+
+  public static TDataNodeConfiguration deserializeTDataNodeInfo(ByteBuffer buffer) {
+    TDataNodeConfiguration dataNodeInfo = new TDataNodeConfiguration();
+    try {
+      dataNodeInfo.read(generateReadProtocol(buffer));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Read TDataNodeInfo failed: ", e);
+    }
+    return dataNodeInfo;
+  }
+
+  public static void serializeTSeriesPartitionSlot(
+      TSeriesPartitionSlot seriesPartitionSlot, DataOutputStream stream) {
+    try {
+      seriesPartitionSlot.write(generateWriteProtocol(stream));
     } catch (TException e) {
       throw new ThriftSerDeException("Write TSeriesPartitionSlot failed: ", e);
     }
   }
 
-  public static TSeriesPartitionSlot readTSeriesPartitionSlot(ByteBuffer buffer) {
+  public static TSeriesPartitionSlot deserializeTSeriesPartitionSlot(ByteBuffer buffer) {
     TSeriesPartitionSlot seriesPartitionSlot = new TSeriesPartitionSlot();
     try {
       seriesPartitionSlot.read(generateReadProtocol(buffer));
@@ -108,16 +179,35 @@ public class ThriftCommonsSerDeUtils {
     return seriesPartitionSlot;
   }
 
-  public static void writeTTimePartitionSlot(
-      TTimePartitionSlot timePartitionSlot, ByteBuffer buffer) {
+  public static void serializeTTimePartitionSlotList(
+      TTimeSlotList timePartitionSlotList, DataOutputStream stream) {
     try {
-      timePartitionSlot.write(generateWriteProtocol(buffer));
+      timePartitionSlotList.write(generateWriteProtocol(stream));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Write TTimeSlotList failed: ", e);
+    }
+  }
+
+  public static TTimeSlotList deserializeTTimePartitionSlotList(ByteBuffer buffer) {
+    TTimeSlotList timePartitionSlotList = new TTimeSlotList();
+    try {
+      timePartitionSlotList.read(generateWriteProtocol(buffer));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Read TTimeSlotList failed: ", e);
+    }
+    return timePartitionSlotList;
+  }
+
+  public static void serializeTTimePartitionSlot(
+      TTimePartitionSlot timePartitionSlot, DataOutputStream stream) {
+    try {
+      timePartitionSlot.write(generateWriteProtocol(stream));
     } catch (TException e) {
       throw new ThriftSerDeException("Write TTimePartitionSlot failed: ", e);
     }
   }
 
-  public static TTimePartitionSlot readTTimePartitionSlot(ByteBuffer buffer) {
+  public static TTimePartitionSlot deserializeTTimePartitionSlot(ByteBuffer buffer) {
     TTimePartitionSlot timePartitionSlot = new TTimePartitionSlot();
     try {
       timePartitionSlot.read(generateReadProtocol(buffer));
@@ -127,15 +217,16 @@ public class ThriftCommonsSerDeUtils {
     return timePartitionSlot;
   }
 
-  public static void writeTConsensusGroupId(TConsensusGroupId consensusGroupId, ByteBuffer buffer) {
+  public static void serializeTConsensusGroupId(
+      TConsensusGroupId consensusGroupId, DataOutputStream stream) {
     try {
-      consensusGroupId.write(generateWriteProtocol(buffer));
+      consensusGroupId.write(generateWriteProtocol(stream));
     } catch (TException e) {
       throw new ThriftSerDeException("Write TConsensusGroupId failed: ", e);
     }
   }
 
-  public static TConsensusGroupId readTConsensusGroupId(ByteBuffer buffer) {
+  public static TConsensusGroupId deserializeTConsensusGroupId(ByteBuffer buffer) {
     TConsensusGroupId consensusGroupId = new TConsensusGroupId();
     try {
       consensusGroupId.read(generateReadProtocol(buffer));
@@ -145,15 +236,16 @@ public class ThriftCommonsSerDeUtils {
     return consensusGroupId;
   }
 
-  public static void writeTRegionReplicaSet(TRegionReplicaSet regionReplicaSet, ByteBuffer buffer) {
+  public static void serializeTRegionReplicaSet(
+      TRegionReplicaSet regionReplicaSet, DataOutputStream stream) {
     try {
-      regionReplicaSet.write(generateWriteProtocol(buffer));
+      regionReplicaSet.write(generateWriteProtocol(stream));
     } catch (TException e) {
       throw new ThriftSerDeException("Write TRegionReplicaSet failed: ", e);
     }
   }
 
-  public static TRegionReplicaSet readTRegionReplicaSet(ByteBuffer buffer) {
+  public static TRegionReplicaSet deserializeTRegionReplicaSet(ByteBuffer buffer) {
     TRegionReplicaSet regionReplicaSet = new TRegionReplicaSet();
     try {
       regionReplicaSet.read(generateReadProtocol(buffer));
@@ -161,5 +253,36 @@ public class ThriftCommonsSerDeUtils {
       throw new ThriftSerDeException("Read TRegionReplicaSet failed: ", e);
     }
     return regionReplicaSet;
+  }
+
+  public static void serializeTSchemaNode(TSchemaNode schemaNode, DataOutputStream stream) {
+    try {
+      schemaNode.write(generateWriteProtocol(stream));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Write TSchemaNode failed: ", e);
+    }
+  }
+
+  public static void serializeTSchemaNode(TSchemaNode schemaNode, ByteBuffer buffer) {
+    try {
+      schemaNode.write(generateWriteProtocol(buffer));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Write TSchemaNode failed: ", e);
+    }
+  }
+
+  public static TSchemaNode deserializeTSchemaNode(ByteBuffer buffer) {
+    TSchemaNode schemaNode = new TSchemaNode();
+    try {
+      schemaNode.read(generateReadProtocol(buffer));
+    } catch (TException e) {
+      throw new ThriftSerDeException("Read TSchemaNode failed: ", e);
+    }
+    return schemaNode;
+  }
+
+  private static ConfigurableTByteBuffer generateTByteBuffer(ByteBuffer buffer)
+      throws TTransportException {
+    return new ConfigurableTByteBuffer(buffer, defaultTConfiguration);
   }
 }

@@ -21,9 +21,9 @@ package org.apache.iotdb.db.mpp.aggregation;
 
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
-import org.apache.iotdb.tsfile.read.common.TimeRange;
 import org.apache.iotdb.tsfile.read.common.block.column.Column;
 import org.apache.iotdb.tsfile.read.common.block.column.ColumnBuilder;
+import org.apache.iotdb.tsfile.utils.BitMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -37,12 +37,14 @@ public class MinTimeAccumulator implements Accumulator {
   // Column should be like: | Time | Value |
   // Value is used to judge isNull()
   @Override
-  public void addInput(Column[] column, TimeRange timeRange) {
-    for (int i = 0; i < column[0].getPositionCount(); i++) {
-      long curTime = column[0].getLong(i);
-      if (curTime >= timeRange.getMin() && curTime < timeRange.getMax() && !column[1].isNull(i)) {
-        updateMinTime(curTime);
-        break;
+  public void addInput(Column[] column, BitMap bitMap, int lastIndex) {
+    for (int i = 0; i <= lastIndex; i++) {
+      if (bitMap != null && !bitMap.isMarked(i)) {
+        continue;
+      }
+      if (!column[1].isNull(i)) {
+        updateMinTime(column[0].getLong(i));
+        return;
       }
     }
   }
@@ -51,17 +53,27 @@ public class MinTimeAccumulator implements Accumulator {
   @Override
   public void addIntermediate(Column[] partialResult) {
     checkArgument(partialResult.length == 1, "partialResult of MinTime should be 1");
+    if (partialResult[0].isNull(0)) {
+      return;
+    }
     updateMinTime(partialResult[0].getLong(0));
   }
 
   @Override
   public void addStatistics(Statistics statistics) {
+    if (statistics == null) {
+      return;
+    }
     updateMinTime(statistics.getStartTime());
   }
 
   // finalResult should be single column, like: | finalMinTime |
   @Override
   public void setFinal(Column finalResult) {
+    if (finalResult.isNull(0)) {
+      return;
+    }
+    hasCandidateResult = true;
     minTime = finalResult.getLong(0);
   }
 
@@ -69,12 +81,20 @@ public class MinTimeAccumulator implements Accumulator {
   @Override
   public void outputIntermediate(ColumnBuilder[] columnBuilders) {
     checkArgument(columnBuilders.length == 1, "partialResult of MinTime should be 1");
-    columnBuilders[0].writeLong(minTime);
+    if (!hasCandidateResult) {
+      columnBuilders[0].appendNull();
+    } else {
+      columnBuilders[0].writeLong(minTime);
+    }
   }
 
   @Override
   public void outputFinal(ColumnBuilder columnBuilder) {
-    columnBuilder.writeLong(minTime);
+    if (!hasCandidateResult) {
+      columnBuilder.appendNull();
+    } else {
+      columnBuilder.writeLong(minTime);
+    }
   }
 
   @Override

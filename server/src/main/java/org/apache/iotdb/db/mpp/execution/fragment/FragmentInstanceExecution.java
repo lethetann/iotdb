@@ -19,24 +19,31 @@
 package org.apache.iotdb.db.mpp.execution.fragment;
 
 import org.apache.iotdb.db.mpp.common.FragmentInstanceId;
-import org.apache.iotdb.db.mpp.execution.datatransfer.ISinkHandle;
 import org.apache.iotdb.db.mpp.execution.driver.IDriver;
+import org.apache.iotdb.db.mpp.execution.exchange.sink.ISink;
 import org.apache.iotdb.db.mpp.execution.schedule.IDriverScheduler;
+import org.apache.iotdb.db.utils.SetThreadName;
 
-import com.google.common.collect.ImmutableList;
 import io.airlift.stats.CounterStat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.List;
 
 import static java.util.Objects.requireNonNull;
 import static org.apache.iotdb.db.mpp.execution.fragment.FragmentInstanceState.FAILED;
 
 public class FragmentInstanceExecution {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(FragmentInstanceExecution.class);
   private final FragmentInstanceId instanceId;
   private final FragmentInstanceContext context;
 
-  private final IDriver driver;
+  // it will be set to null while this FI is FINISHED
+  private List<IDriver> drivers;
 
-  private final ISinkHandle sinkHandle;
+  // it will be set to null while this FI is FINISHED
+  private ISink sink;
 
   private final FragmentInstanceStateMachine stateMachine;
 
@@ -46,25 +53,29 @@ public class FragmentInstanceExecution {
       IDriverScheduler scheduler,
       FragmentInstanceId instanceId,
       FragmentInstanceContext context,
-      IDriver driver,
+      List<IDriver> drivers,
+      ISink sinkHandle,
       FragmentInstanceStateMachine stateMachine,
-      CounterStat failedInstances) {
+      CounterStat failedInstances,
+      long timeOut) {
     FragmentInstanceExecution execution =
-        new FragmentInstanceExecution(instanceId, context, driver, stateMachine);
+        new FragmentInstanceExecution(instanceId, context, drivers, sinkHandle, stateMachine);
     execution.initialize(failedInstances, scheduler);
-    scheduler.submitDrivers(instanceId.getQueryId(), ImmutableList.of(driver));
+    LOGGER.debug("timeout is {}ms.", timeOut);
+    scheduler.submitDrivers(instanceId.getQueryId(), drivers, timeOut);
     return execution;
   }
 
   private FragmentInstanceExecution(
       FragmentInstanceId instanceId,
       FragmentInstanceContext context,
-      IDriver driver,
+      List<IDriver> drivers,
+      ISink sink,
       FragmentInstanceStateMachine stateMachine) {
     this.instanceId = instanceId;
     this.context = context;
-    this.driver = driver;
-    this.sinkHandle = driver.getSinkHandle();
+    this.drivers = drivers;
+    this.sink = sink;
     this.stateMachine = stateMachine;
   }
 
@@ -81,20 +92,19 @@ public class FragmentInstanceExecution {
   }
 
   public FragmentInstanceInfo getInstanceInfo() {
-    return new FragmentInstanceInfo(stateMachine.getState(), context.getEndTime());
+    return new FragmentInstanceInfo(
+        stateMachine.getState(),
+        context.getEndTime(),
+        context.getFailedCause(),
+        context.getFailureInfoList());
   }
 
-  public void failed(Throwable cause) {
-    requireNonNull(cause, "cause is null");
-    stateMachine.failed(cause);
+  public long getStartTime() {
+    return context.getStartTime();
   }
 
-  public void cancel() {
-    stateMachine.cancel();
-  }
-
-  public void abort() {
-    stateMachine.abort();
+  public FragmentInstanceStateMachine getStateMachine() {
+    return stateMachine;
   }
 
   // this is a separate method to ensure that the `this` reference is not leaked during construction
@@ -102,18 +112,35 @@ public class FragmentInstanceExecution {
     requireNonNull(failedInstances, "failedInstances is null");
     stateMachine.addStateChangeListener(
         newState -> {
-          if (!newState.isDone()) {
-            return;
-          }
+          try (SetThreadName threadName = new SetThreadName(instanceId.getFullId())) {
+            if (!newState.isDone()) {
+              return;
+            }
 
-          // Update failed tasks counter
-          if (newState == FAILED) {
-            failedInstances.update(1);
-          }
+            // Update failed tasks counter
+            if (newState == FAILED) {
+              failedInstances.update(1);
+            }
 
-          driver.close();
-          sinkHandle.abort();
-          scheduler.abortFragmentInstance(instanceId);
+            if (newState.isFailed()) {
+              sink.abort();
+            } else {
+              sink.close();
+            }
+            // help for gc
+            sink = null;
+            // close the driver after sink is aborted or closed because in driver.close() it
+            // will try to call ISink.setNoMoreTsBlocks()
+            for (IDriver driver : drivers) {
+              driver.close();
+            }
+            context.releaseResource();
+            // help for gc
+            drivers = null;
+            if (newState.isFailed()) {
+              scheduler.abortFragmentInstance(instanceId);
+            }
+          }
         });
   }
 }

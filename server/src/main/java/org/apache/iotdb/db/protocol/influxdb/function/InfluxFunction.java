@@ -18,8 +18,8 @@
  */
 package org.apache.iotdb.db.protocol.influxdb.function;
 
-import org.apache.iotdb.db.query.expression.Expression;
-import org.apache.iotdb.db.query.expression.leaf.TimeSeriesOperand;
+import org.apache.iotdb.db.mpp.plan.expression.Expression;
+import org.apache.iotdb.db.mpp.plan.expression.leaf.TimeSeriesOperand;
 
 import java.util.List;
 
@@ -28,11 +28,11 @@ public abstract class InfluxFunction {
   // contain possible parameters
   private List<Expression> expressionList;
 
-  public InfluxFunction(List<Expression> expressionList) {
+  protected InfluxFunction(List<Expression> expressionList) {
     this.expressionList = expressionList;
   }
 
-  public InfluxFunction() {}
+  protected InfluxFunction() {}
 
   public List<Expression> getExpressions() {
     return this.expressionList;

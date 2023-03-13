@@ -19,54 +19,87 @@
 
 package org.apache.iotdb.db.metadata.cache;
 
-import org.apache.iotdb.commons.exception.IllegalPathException;
+import org.apache.iotdb.commons.path.MeasurementPath;
 import org.apache.iotdb.commons.path.PartialPath;
-import org.apache.iotdb.commons.utils.TestOnly;
+import org.apache.iotdb.commons.service.metric.MetricService;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.mpp.common.schematree.PathPatternTree;
-import org.apache.iotdb.db.mpp.common.schematree.SchemaTree;
-import org.apache.iotdb.db.mpp.plan.analyze.FakeSchemaFetcherImpl;
-import org.apache.iotdb.db.mpp.plan.analyze.ISchemaFetcher;
-import org.apache.iotdb.tsfile.common.constant.TsFileConstant;
-import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.db.metadata.cache.dualkeycache.IDualKeyCache;
+import org.apache.iotdb.db.metadata.cache.dualkeycache.IDualKeyCacheComputation;
+import org.apache.iotdb.db.metadata.cache.dualkeycache.impl.DualKeyCacheBuilder;
+import org.apache.iotdb.db.metadata.cache.dualkeycache.impl.DualKeyCachePolicy;
+import org.apache.iotdb.db.mpp.common.schematree.ClusterSchemaTree;
+import org.apache.iotdb.db.mpp.plan.analyze.schema.ISchemaComputation;
+import org.apache.iotdb.tsfile.read.TimeValuePair;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * This class takes the responsibility of metadata cache management of all DataRegions under
  * StorageEngine
  */
 public class DataNodeSchemaCache {
+
   private static final Logger logger = LoggerFactory.getLogger(DataNodeSchemaCache.class);
+  private static final IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
 
-  private static IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
+  private final IDualKeyCache<PartialPath, String, SchemaCacheEntry> dualKeyCache;
 
-  private Cache<PartialPath, SchemaCacheEntity> schemaEntityCache;
-
-  // TODO use fakeSchemaFetcherImpl for test temporarily
-  private static final ISchemaFetcher schemaFetcher = new FakeSchemaFetcherImpl();
+  // cache update or clean have higher priority than cache read
+  private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock(false);
 
   private DataNodeSchemaCache() {
-    schemaEntityCache =
-        Caffeine.newBuilder().maximumSize(config.getDataNodeSchemaCacheSize()).build();
+    DualKeyCacheBuilder<PartialPath, String, SchemaCacheEntry> dualKeyCacheBuilder =
+        new DualKeyCacheBuilder<>();
+    dualKeyCache =
+        dualKeyCacheBuilder
+            .cacheEvictionPolicy(DualKeyCachePolicy.LRU)
+            .memoryCapacity(config.getAllocateMemoryForSchemaCache())
+            .firstKeySizeComputer(PartialPath::estimateSize)
+            .secondKeySizeComputer(s -> 32 + 2 * s.length())
+            .valueSizeComputer(SchemaCacheEntry::estimateSize)
+            .build();
+
+    MetricService.getInstance().addMetricSet(new DataNodeSchemaCacheMetrics(this));
+  }
+
+  public double getHitRate() {
+    return dualKeyCache.stats().hitRate() * 100;
   }
 
   public static DataNodeSchemaCache getInstance() {
-    return DataNodeSchemaCache.DataNodeSchemaEntryCacheHolder.INSTANCE;
+    return DataNodeSchemaCacheHolder.INSTANCE;
   }
 
   /** singleton pattern. */
-  private static class DataNodeSchemaEntryCacheHolder {
+  private static class DataNodeSchemaCacheHolder {
     private static final DataNodeSchemaCache INSTANCE = new DataNodeSchemaCache();
+  }
+
+  public void takeReadLock() {
+    readWriteLock.readLock().lock();
+  }
+
+  public void releaseReadLock() {
+    readWriteLock.readLock().unlock();
+  }
+
+  public void takeWriteLock() {
+    readWriteLock.writeLock().lock();
+  }
+
+  public void releaseWriteLock() {
+    readWriteLock.writeLock().unlock();
   }
 
   /**
@@ -76,111 +109,166 @@ public class DataNodeSchemaCache {
    * @param measurements
    * @return timeseries partialPath and its SchemaEntity
    */
-  public Map<PartialPath, SchemaCacheEntity> getSchemaEntity(
-      PartialPath devicePath, String[] measurements) {
-    Map<PartialPath, SchemaCacheEntity> schemaCacheEntityMap = new HashMap<>();
-    SchemaCacheEntity schemaCacheEntity;
-    List<String> fetchMeasurements = new ArrayList<>();
-    for (String measurement : measurements) {
-      PartialPath path = null;
-      try {
-        path = new PartialPath(devicePath.getFullPath(), measurement);
-      } catch (IllegalPathException e) {
-        logger.error(
-            "Create PartialPath:{} failed.",
-            devicePath.getFullPath() + TsFileConstant.PATH_SEPARATOR + measurement);
-      }
-      schemaCacheEntity = schemaEntityCache.getIfPresent(path);
-      if (schemaCacheEntity != null) {
-        schemaCacheEntityMap.put(path, schemaCacheEntity);
-      } else {
-        fetchMeasurements.add(measurement);
-      }
-    }
-    if (fetchMeasurements.size() != 0) {
-      SchemaTree schemaTree;
-      schemaTree = schemaFetcher.fetchSchema(new PathPatternTree(devicePath, fetchMeasurements));
-      // TODO need to construct schemaEntry from schemaTree
+  public ClusterSchemaTree get(PartialPath devicePath, String[] measurements) {
+    ClusterSchemaTree schemaTree = new ClusterSchemaTree();
+    Set<String> storageGroupSet = new HashSet<>();
 
+    dualKeyCache.compute(
+        new IDualKeyCacheComputation<PartialPath, String, SchemaCacheEntry>() {
+          @Override
+          public PartialPath getFirstKey() {
+            return devicePath;
+          }
+
+          @Override
+          public String[] getSecondKeyList() {
+            return measurements;
+          }
+
+          @Override
+          public void computeValue(int index, SchemaCacheEntry value) {
+            if (value != null) {
+              schemaTree.appendSingleMeasurement(
+                  devicePath.concatNode(value.getSchemaEntryId()),
+                  value.getMeasurementSchema(),
+                  value.getTagMap(),
+                  null,
+                  value.isAligned());
+              storageGroupSet.add(value.getStorageGroup());
+            }
+          }
+        });
+    schemaTree.setDatabases(storageGroupSet);
+    return schemaTree;
+  }
+
+  public ClusterSchemaTree get(PartialPath fullPath) {
+    SchemaCacheEntry schemaCacheEntry =
+        dualKeyCache.get(fullPath.getDevicePath(), fullPath.getMeasurement());
+    ClusterSchemaTree schemaTree = new ClusterSchemaTree();
+    if (schemaCacheEntry != null) {
+      schemaTree.appendSingleMeasurement(
+          fullPath,
+          schemaCacheEntry.getMeasurementSchema(),
+          schemaCacheEntry.getTagMap(),
+          null,
+          schemaCacheEntry.isAligned());
+      schemaTree.setDatabases(Collections.singleton(schemaCacheEntry.getStorageGroup()));
     }
-    return schemaCacheEntityMap;
+    return schemaTree;
+  }
+
+  public List<Integer> compute(ISchemaComputation schemaComputation) {
+    List<Integer> indexOfMissingMeasurements = new ArrayList<>();
+    final AtomicBoolean isFirstMeasurement = new AtomicBoolean(true);
+    dualKeyCache.compute(
+        new IDualKeyCacheComputation<PartialPath, String, SchemaCacheEntry>() {
+          @Override
+          public PartialPath getFirstKey() {
+            return schemaComputation.getDevicePath();
+          }
+
+          @Override
+          public String[] getSecondKeyList() {
+            return schemaComputation.getMeasurements();
+          }
+
+          @Override
+          public void computeValue(int index, SchemaCacheEntry value) {
+            if (value == null) {
+              indexOfMissingMeasurements.add(index);
+            } else {
+              if (isFirstMeasurement.get()) {
+                schemaComputation.computeDevice(value.isAligned());
+                isFirstMeasurement.getAndSet(false);
+              }
+              schemaComputation.computeMeasurement(index, value);
+            }
+          }
+        });
+    return indexOfMissingMeasurements;
+  }
+
+  public void put(ClusterSchemaTree schemaTree) {
+    for (MeasurementPath measurementPath : schemaTree.getAllMeasurement()) {
+      putSingleMeasurementPath(schemaTree.getBelongedDatabase(measurementPath), measurementPath);
+    }
+  }
+
+  private void putSingleMeasurementPath(String storageGroup, MeasurementPath measurementPath) {
+    SchemaCacheEntry schemaCacheEntry =
+        new SchemaCacheEntry(
+            storageGroup,
+            (MeasurementSchema) measurementPath.getMeasurementSchema(),
+            measurementPath.getTagMap(),
+            measurementPath.isUnderAlignedEntity());
+    dualKeyCache.put(
+        measurementPath.getDevicePath(), measurementPath.getMeasurement(), schemaCacheEntry);
+  }
+
+  public TimeValuePair getLastCache(PartialPath seriesPath) {
+    SchemaCacheEntry entry =
+        dualKeyCache.get(seriesPath.getDevicePath(), seriesPath.getMeasurement());
+    if (null == entry) {
+      return null;
+    }
+
+    return DataNodeLastCacheManager.getLastCache(entry);
+  }
+
+  /** get SchemaCacheEntry and update last cache */
+  public void updateLastCache(
+      PartialPath seriesPath,
+      TimeValuePair timeValuePair,
+      boolean highPriorityUpdate,
+      Long latestFlushedTime) {
+    SchemaCacheEntry entry =
+        dualKeyCache.get(seriesPath.getDevicePath(), seriesPath.getMeasurement());
+    if (null == entry) {
+      return;
+    }
+
+    DataNodeLastCacheManager.updateLastCache(
+        entry, timeValuePair, highPriorityUpdate, latestFlushedTime);
   }
 
   /**
-   * Get SchemaEntity info with auto create schema
-   *
-   * @param devicePath
-   * @param measurements
-   * @param tsDataTypes
-   * @param isAligned
-   * @return timeseries partialPath and its SchemaEntity
+   * get or create SchemaCacheEntry and update last cache, only support non-aligned sensor or
+   * aligned sensor without only one sub sensor
    */
-  public Map<PartialPath, SchemaCacheEntity> getSchemaEntityWithAutoCreate(
-      PartialPath devicePath, String[] measurements, TSDataType[] tsDataTypes, boolean isAligned) {
-    Map<PartialPath, SchemaCacheEntity> schemaCacheEntityMap = new HashMap<>();
-    SchemaCacheEntity schemaCacheEntity;
-    List<String> fetchMeasurements = new ArrayList<>();
-    List<TSDataType> fetchTsDataTypes = new ArrayList<>();
-    for (int i = 0; i < measurements.length; i++) {
-      PartialPath path = null;
-      try {
-        path = new PartialPath(devicePath.getFullPath(), measurements[i]);
-      } catch (IllegalPathException e) {
-        logger.error(
-            "Create PartialPath:{} failed.",
-            devicePath.getFullPath() + TsFileConstant.PATH_SEPARATOR + measurements[i]);
-      }
-      schemaCacheEntity = schemaEntityCache.getIfPresent(path);
-      if (schemaCacheEntity != null) {
-        schemaCacheEntityMap.put(path, schemaCacheEntity);
-      } else {
-        fetchMeasurements.add(measurements[i]);
-        fetchTsDataTypes.add(tsDataTypes[i]);
-      }
-    }
-    if (fetchMeasurements.size() != 0) {
-      SchemaTree schemaTree;
-      schemaTree =
-          schemaFetcher.fetchSchemaWithAutoCreate(
-              devicePath,
-              fetchMeasurements.toArray(new String[fetchMeasurements.size()]),
-              fetchTsDataTypes.toArray(new TSDataType[fetchTsDataTypes.size()]),
-              isAligned);
-      // TODO need to construct schemaEntry from schemaTree
-
-      for (int i = 0; i < fetchMeasurements.size(); i++) {
-        try {
-          PartialPath path = new PartialPath(devicePath.getFullPath(), fetchMeasurements.get(i));
-          SchemaCacheEntity entity =
-              new SchemaCacheEntity(fetchMeasurements.get(i), fetchTsDataTypes.get(i), isAligned);
-          schemaEntityCache.put(path, entity);
-          schemaCacheEntityMap.put(path, entity);
-        } catch (IllegalPathException e) {
-          logger.error("Create PartialPath:{} failed.", devicePath.getFullPath());
+  public void updateLastCache(
+      String storageGroup,
+      MeasurementPath measurementPath,
+      TimeValuePair timeValuePair,
+      boolean highPriorityUpdate,
+      Long latestFlushedTime) {
+    PartialPath seriesPath = measurementPath.transformToPartialPath();
+    SchemaCacheEntry entry =
+        dualKeyCache.get(seriesPath.getDevicePath(), seriesPath.getMeasurement());
+    if (null == entry) {
+      synchronized (dualKeyCache) {
+        entry = dualKeyCache.get(seriesPath.getDevicePath(), seriesPath.getMeasurement());
+        if (null == entry) {
+          entry =
+              new SchemaCacheEntry(
+                  storageGroup,
+                  (MeasurementSchema) measurementPath.getMeasurementSchema(),
+                  measurementPath.getTagMap(),
+                  measurementPath.isUnderAlignedEntity());
+          dualKeyCache.put(seriesPath.getDevicePath(), seriesPath.getMeasurement(), entry);
         }
       }
     }
-    return schemaCacheEntityMap;
+
+    DataNodeLastCacheManager.updateLastCache(
+        entry, timeValuePair, highPriorityUpdate, latestFlushedTime);
   }
 
-  /**
-   * For delete timeseries meatadata cache operation
-   *
-   * @param partialPath
-   * @return
-   */
-  public void invalidate(PartialPath partialPath) {
-    schemaEntityCache.invalidate(partialPath);
+  public void invalidateAll() {
+    dualKeyCache.invalidateAll();
   }
 
-  @TestOnly
   public void cleanUp() {
-    schemaEntityCache.invalidateAll();
-    schemaEntityCache.cleanUp();
-  }
-
-  @TestOnly
-  protected Cache<PartialPath, SchemaCacheEntity> getSchemaEntityCache() {
-    return schemaEntityCache;
+    dualKeyCache.cleanUp();
   }
 }

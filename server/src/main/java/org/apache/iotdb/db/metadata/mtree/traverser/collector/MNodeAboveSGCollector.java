@@ -30,27 +30,30 @@ public abstract class MNodeAboveSGCollector<T> extends MNodeCollector<T> {
 
   protected Set<PartialPath> involvedStorageGroupMNodes = new HashSet<>();
 
-  public MNodeAboveSGCollector(IMNode startNode, PartialPath path, IMTreeStore store)
+  protected MNodeAboveSGCollector(
+      IMNode startNode, PartialPath path, IMTreeStore store, boolean isPrefixMatch)
       throws MetadataException {
-    super(startNode, path, store);
+    super(startNode, path, store, isPrefixMatch);
   }
 
   @Override
-  protected boolean processInternalMatchedMNode(IMNode node, int idx, int level) {
+  protected boolean shouldVisitSubtreeOfFullMatchedNode(IMNode node) {
     if (node.isStorageGroup()) {
-      involvedStorageGroupMNodes.add(node.getPartialPath());
-      return true;
+      involvedStorageGroupMNodes.add(getParentPartialPath().concatNode(node.getName()));
+      return false;
+    } else {
+      return super.shouldVisitSubtreeOfFullMatchedNode(node);
     }
-    return super.processInternalMatchedMNode(node, idx, level);
   }
 
   @Override
-  protected boolean processFullMatchedMNode(IMNode node, int idx, int level) {
+  protected boolean shouldVisitSubtreeOfInternalMatchedNode(IMNode node) {
     if (node.isStorageGroup()) {
-      involvedStorageGroupMNodes.add(node.getPartialPath());
-      return true;
+      involvedStorageGroupMNodes.add(getParentPartialPath().concatNode(node.getName()));
+      return false;
+    } else {
+      return super.shouldVisitSubtreeOfInternalMatchedNode(node);
     }
-    return super.processFullMatchedMNode(node, idx, level);
   }
 
   public Set<PartialPath> getInvolvedStorageGroupMNodes() {

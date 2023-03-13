@@ -25,7 +25,7 @@ import org.apache.iotdb.consensus.common.request.IConsensusRequest;
 
 import java.io.File;
 
-public class EmptyStateMachine implements IStateMachine {
+public class EmptyStateMachine implements IStateMachine, IStateMachine.EventApi {
 
   @Override
   public void start() {}
@@ -36,6 +36,11 @@ public class EmptyStateMachine implements IStateMachine {
   @Override
   public TSStatus write(IConsensusRequest IConsensusRequest) {
     return new TSStatus(0);
+  }
+
+  @Override
+  public IConsensusRequest deserializeRequest(IConsensusRequest request) {
+    return request;
   }
 
   @Override

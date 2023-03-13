@@ -21,16 +21,20 @@ package org.apache.iotdb.db.mpp.plan.planner.plan.node.metedata.read;
 
 import org.apache.iotdb.commons.exception.IllegalPathException;
 import org.apache.iotdb.commons.path.PartialPath;
-import org.apache.iotdb.db.mpp.common.header.HeaderConstant;
+import org.apache.iotdb.db.mpp.common.header.ColumnHeader;
+import org.apache.iotdb.db.mpp.common.header.ColumnHeaderConstant;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeType;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.stream.Collectors;
 
-public class DevicesCountNode extends SchemaScanNode {
+public class DevicesCountNode extends SchemaQueryScanNode {
 
   public DevicesCountNode(PlanNodeId id, PartialPath partialPath, boolean isPrefixPath) {
     super(id, partialPath, isPrefixPath);
@@ -43,7 +47,9 @@ public class DevicesCountNode extends SchemaScanNode {
 
   @Override
   public List<String> getOutputColumnNames() {
-    return HeaderConstant.countDevicesHeader.getRespColumns();
+    return ColumnHeaderConstant.countDevicesColumnHeaders.stream()
+        .map(ColumnHeader::getColumnName)
+        .collect(Collectors.toList());
   }
 
   @Override
@@ -51,6 +57,13 @@ public class DevicesCountNode extends SchemaScanNode {
     PlanNodeType.DEVICES_COUNT.serialize(byteBuffer);
     ReadWriteIOUtils.write(path.getFullPath(), byteBuffer);
     ReadWriteIOUtils.write(isPrefixPath, byteBuffer);
+  }
+
+  @Override
+  protected void serializeAttributes(DataOutputStream stream) throws IOException {
+    PlanNodeType.DEVICES_COUNT.serialize(stream);
+    ReadWriteIOUtils.write(path.getFullPath(), stream);
+    ReadWriteIOUtils.write(isPrefixPath, stream);
   }
 
   public static PlanNode deserialize(ByteBuffer buffer) {
@@ -64,5 +77,11 @@ public class DevicesCountNode extends SchemaScanNode {
     boolean isPrefixPath = ReadWriteIOUtils.readBool(buffer);
     PlanNodeId planNodeId = PlanNodeId.deserialize(buffer);
     return new DevicesCountNode(planNodeId, path, isPrefixPath);
+  }
+
+  @Override
+  public String toString() {
+    return String.format(
+        "DeviceCountNode-%s:[DataRegion: %s]", this.getPlanNodeId(), this.getRegionReplicaSet());
   }
 }

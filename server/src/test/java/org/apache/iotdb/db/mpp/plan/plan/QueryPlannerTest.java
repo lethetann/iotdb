@@ -20,10 +20,11 @@
 package org.apache.iotdb.db.mpp.plan.plan;
 
 import org.apache.iotdb.common.rpc.thrift.TEndPoint;
+import org.apache.iotdb.commons.client.ClientPoolFactory;
 import org.apache.iotdb.commons.client.IClientManager;
+import org.apache.iotdb.commons.client.async.AsyncDataNodeInternalServiceClient;
 import org.apache.iotdb.commons.client.sync.SyncDataNodeInternalServiceClient;
 import org.apache.iotdb.commons.concurrent.IoTDBThreadPoolFactory;
-import org.apache.iotdb.db.client.DataNodeClientPoolFactory;
 import org.apache.iotdb.db.mpp.common.MPPQueryContext;
 import org.apache.iotdb.db.mpp.common.QueryId;
 import org.apache.iotdb.db.mpp.common.SessionInfo;
@@ -45,19 +46,26 @@ import java.time.ZoneId;
 public class QueryPlannerTest {
 
   private static IClientManager<TEndPoint, SyncDataNodeInternalServiceClient>
-      internalServiceClientManager;
+      syncInternalServiceClientManager;
+
+  private static IClientManager<TEndPoint, AsyncDataNodeInternalServiceClient>
+      asyncInternalServiceClientManager;
 
   @BeforeClass
   public static void setUp() {
-    internalServiceClientManager =
+    syncInternalServiceClientManager =
         new IClientManager.Factory<TEndPoint, SyncDataNodeInternalServiceClient>()
             .createClientManager(
-                new DataNodeClientPoolFactory.SyncDataNodeInternalServiceClientPoolFactory());
+                new ClientPoolFactory.SyncDataNodeInternalServiceClientPoolFactory());
+    asyncInternalServiceClientManager =
+        new IClientManager.Factory<TEndPoint, AsyncDataNodeInternalServiceClient>()
+            .createClientManager(
+                new ClientPoolFactory.AsyncDataNodeInternalServiceClientPoolFactory());
   }
 
   @AfterClass
   public static void destroy() {
-    internalServiceClientManager.close();
+    syncInternalServiceClientManager.close();
   }
 
   @Ignore
@@ -74,14 +82,16 @@ public class QueryPlannerTest {
             new MPPQueryContext(
                 querySql,
                 new QueryId("query1"),
-                new SessionInfo(),
+                new SessionInfo(1L, "fakeUsername", "fakeZoneId"),
                 new TEndPoint(),
                 new TEndPoint()),
             IoTDBThreadPoolFactory.newSingleThreadExecutor("test_query"),
+            IoTDBThreadPoolFactory.newSingleThreadExecutor("test_write_operation"),
             IoTDBThreadPoolFactory.newSingleThreadScheduledExecutor("test_query_scheduled"),
             new FakePartitionFetcherImpl(),
             new FakeSchemaFetcherImpl(),
-            internalServiceClientManager);
+            syncInternalServiceClientManager,
+            asyncInternalServiceClientManager);
     queryExecution.doLogicalPlan();
     System.out.printf("SQL: %s%n%n", querySql);
     System.out.println("===== Step 1: Logical Plan =====");

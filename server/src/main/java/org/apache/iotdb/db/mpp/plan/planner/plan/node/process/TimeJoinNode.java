@@ -22,9 +22,11 @@ import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeType;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanVisitor;
-import org.apache.iotdb.db.mpp.plan.statement.component.OrderBy;
+import org.apache.iotdb.db.mpp.plan.statement.component.Ordering;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,50 +38,36 @@ import java.util.stream.Collectors;
  * timestamp column. It will join two or more TsBlock by Timestamp column. The output result of
  * TimeJoinOperator is sorted by timestamp
  */
-public class TimeJoinNode extends ProcessNode {
+public class TimeJoinNode extends MultiChildProcessNode {
 
   // This parameter indicates the order when executing multiway merge sort.
-  private final OrderBy mergeOrder;
+  private final Ordering mergeOrder;
 
-  private List<PlanNode> children;
-
-  public TimeJoinNode(PlanNodeId id, OrderBy mergeOrder) {
-    super(id);
+  public TimeJoinNode(PlanNodeId id, Ordering mergeOrder) {
+    super(id, new ArrayList<>());
     this.mergeOrder = mergeOrder;
-    this.children = new ArrayList<>();
   }
 
-  public TimeJoinNode(PlanNodeId id, OrderBy mergeOrder, List<PlanNode> children) {
-    this(id, mergeOrder);
-    this.children = children;
+  public TimeJoinNode(PlanNodeId id, Ordering mergeOrder, List<PlanNode> children) {
+    super(id, children);
+    this.mergeOrder = mergeOrder;
   }
 
-  public void setChildren(List<PlanNode> children) {
-    this.children = children;
-  }
-
-  public OrderBy getMergeOrder() {
+  public Ordering getMergeOrder() {
     return mergeOrder;
-  }
-
-  @Override
-  public List<PlanNode> getChildren() {
-    return children;
-  }
-
-  @Override
-  public void addChild(PlanNode child) {
-    this.children.add(child);
-  }
-
-  @Override
-  public int allowedChildCount() {
-    return CHILD_COUNT_NO_LIMIT;
   }
 
   @Override
   public PlanNode clone() {
     return new TimeJoinNode(getPlanNodeId(), getMergeOrder());
+  }
+
+  @Override
+  public PlanNode createSubNode(int subNodeId, int startIndex, int endIndex) {
+    return new TimeJoinNode(
+        new PlanNodeId(String.format("%s-%s", getPlanNodeId(), subNodeId)),
+        getMergeOrder(),
+        new ArrayList<>(children.subList(startIndex, endIndex)));
   }
 
   @Override
@@ -102,8 +90,14 @@ public class TimeJoinNode extends ProcessNode {
     ReadWriteIOUtils.write(mergeOrder.ordinal(), byteBuffer);
   }
 
+  @Override
+  protected void serializeAttributes(DataOutputStream stream) throws IOException {
+    PlanNodeType.TIME_JOIN.serialize(stream);
+    ReadWriteIOUtils.write(mergeOrder.ordinal(), stream);
+  }
+
   public static TimeJoinNode deserialize(ByteBuffer byteBuffer) {
-    OrderBy mergeOrder = OrderBy.values()[ReadWriteIOUtils.readInt(byteBuffer)];
+    Ordering mergeOrder = Ordering.values()[ReadWriteIOUtils.readInt(byteBuffer)];
     PlanNodeId planNodeId = PlanNodeId.deserialize(byteBuffer);
     return new TimeJoinNode(planNodeId, mergeOrder);
   }

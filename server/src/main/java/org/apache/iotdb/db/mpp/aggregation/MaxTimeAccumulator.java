@@ -21,26 +21,29 @@ package org.apache.iotdb.db.mpp.aggregation;
 
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
-import org.apache.iotdb.tsfile.read.common.TimeRange;
 import org.apache.iotdb.tsfile.read.common.block.column.Column;
 import org.apache.iotdb.tsfile.read.common.block.column.ColumnBuilder;
+import org.apache.iotdb.tsfile.utils.BitMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
 public class MaxTimeAccumulator implements Accumulator {
 
   protected long maxTime = Long.MIN_VALUE;
+  protected boolean initResult = false;
 
   public MaxTimeAccumulator() {}
 
   // Column should be like: | Time | Value |
   // Value is used to judge isNull()
   @Override
-  public void addInput(Column[] column, TimeRange timeRange) {
-    for (int i = 0; i < column[0].getPositionCount(); i++) {
-      long curTime = column[0].getLong(i);
-      if (curTime >= timeRange.getMin() && curTime < timeRange.getMax() && !column[1].isNull(i)) {
-        updateMaxTime(curTime);
+  public void addInput(Column[] column, BitMap bitMap, int lastIndex) {
+    for (int i = 0; i <= lastIndex; i++) {
+      if (bitMap != null && !bitMap.isMarked(i)) {
+        continue;
+      }
+      if (!column[1].isNull(i)) {
+        updateMaxTime(column[0].getLong(i));
       }
     }
   }
@@ -49,17 +52,27 @@ public class MaxTimeAccumulator implements Accumulator {
   @Override
   public void addIntermediate(Column[] partialResult) {
     checkArgument(partialResult.length == 1, "partialResult of MaxTime should be 1");
+    if (partialResult[0].isNull(0)) {
+      return;
+    }
     updateMaxTime(partialResult[0].getLong(0));
   }
 
   @Override
   public void addStatistics(Statistics statistics) {
+    if (statistics == null) {
+      return;
+    }
     updateMaxTime(statistics.getEndTime());
   }
 
   // finalResult should be single column, like: | finalMaxTime |
   @Override
   public void setFinal(Column finalResult) {
+    if (finalResult.isNull(0)) {
+      return;
+    }
+    initResult = true;
     maxTime = finalResult.getLong(0);
   }
 
@@ -67,16 +80,25 @@ public class MaxTimeAccumulator implements Accumulator {
   @Override
   public void outputIntermediate(ColumnBuilder[] columnBuilders) {
     checkArgument(columnBuilders.length == 1, "partialResult of MaxTime should be 1");
-    columnBuilders[0].writeLong(maxTime);
+    if (!initResult) {
+      columnBuilders[0].appendNull();
+    } else {
+      columnBuilders[0].writeLong(maxTime);
+    }
   }
 
   @Override
   public void outputFinal(ColumnBuilder columnBuilder) {
-    columnBuilder.writeLong(maxTime);
+    if (!initResult) {
+      columnBuilder.appendNull();
+    } else {
+      columnBuilder.writeLong(maxTime);
+    }
   }
 
   @Override
   public void reset() {
+    initResult = false;
     this.maxTime = Long.MIN_VALUE;
   }
 
@@ -96,6 +118,7 @@ public class MaxTimeAccumulator implements Accumulator {
   }
 
   protected void updateMaxTime(long curTime) {
+    initResult = true;
     maxTime = Math.max(maxTime, curTime);
   }
 }

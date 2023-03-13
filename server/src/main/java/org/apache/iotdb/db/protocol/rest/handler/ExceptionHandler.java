@@ -22,11 +22,14 @@ import org.apache.iotdb.commons.exception.IllegalPathException;
 import org.apache.iotdb.commons.exception.IoTDBException;
 import org.apache.iotdb.commons.exception.MetadataException;
 import org.apache.iotdb.db.exception.StorageEngineException;
-import org.apache.iotdb.db.exception.metadata.StorageGroupNotSetException;
+import org.apache.iotdb.db.exception.metadata.DatabaseNotSetException;
 import org.apache.iotdb.db.exception.query.QueryProcessException;
+import org.apache.iotdb.db.exception.sql.SemanticException;
+import org.apache.iotdb.db.exception.sql.StatementAnalyzeException;
 import org.apache.iotdb.db.protocol.rest.model.ExecutionStatus;
 import org.apache.iotdb.rpc.TSStatusCode;
 
+import org.antlr.v4.runtime.misc.ParseCancellationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,9 +47,9 @@ public class ExceptionHandler {
     if (e instanceof QueryProcessException) {
       responseResult.setMessage(e.getMessage());
       responseResult.setCode(((QueryProcessException) e).getErrorCode());
-    } else if (e instanceof StorageGroupNotSetException) {
+    } else if (e instanceof DatabaseNotSetException) {
       responseResult.setMessage(e.getMessage());
-      responseResult.setCode(((StorageGroupNotSetException) e).getErrorCode());
+      responseResult.setCode(((DatabaseNotSetException) e).getErrorCode());
     } else if (e instanceof StorageEngineException) {
       responseResult.setMessage(e.getMessage());
       responseResult.setCode(((StorageEngineException) e).getErrorCode());
@@ -62,7 +65,16 @@ public class ExceptionHandler {
     } else if (e instanceof IoTDBException) {
       responseResult.setMessage(e.getMessage());
       responseResult.setCode(((IoTDBException) e).getErrorCode());
-    } else if (!(e instanceof IOException) && !(e instanceof NullPointerException)) {
+    } else if (e instanceof ParseCancellationException) {
+      responseResult.setMessage(e.getMessage());
+      responseResult.setCode(TSStatusCode.SQL_PARSE_ERROR.getStatusCode());
+    } else if (e instanceof StatementAnalyzeException) {
+      responseResult.setMessage(e.getMessage());
+      responseResult.setCode(TSStatusCode.METADATA_ERROR.getStatusCode());
+    } else if (e instanceof SemanticException) {
+      responseResult.setMessage(e.getMessage());
+      responseResult.setCode(TSStatusCode.SEMANTIC_ERROR.getStatusCode());
+    } else if (!(e instanceof IOException) && !(e instanceof RuntimeException)) {
       responseResult.setMessage(e.getMessage());
       responseResult.setCode(TSStatusCode.EXECUTE_STATEMENT_ERROR.getStatusCode());
     } else {

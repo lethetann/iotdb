@@ -26,12 +26,13 @@ export interface IoTDBQuery extends DataQuery {
 
   paths: string[];
   aggregateFun?: string;
-  aggregated: string;
-  isAggregated: boolean;
+  sqlType: string;
+  isDropDownList: boolean;
   fillClauses: string;
   groupBy?: GroupBy;
   limitAll?: LimitAll;
   options: Array<Array<SelectableValue<string>>>;
+  hide: boolean;
 }
 
 export interface GroupBy {
@@ -56,7 +57,6 @@ export interface LimitAll {
  */
 export interface IoTDBOptions extends DataSourceJsonData {
   url: string;
-  password: string;
   username: string;
 }
 
@@ -64,5 +64,5 @@ export interface IoTDBOptions extends DataSourceJsonData {
  * Value that is used in the backend, but never sent over HTTP to the frontend
  */
 export interface IoTDBSecureJsonData {
-  apiKey?: string;
+  password?: string;
 }

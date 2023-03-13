@@ -19,16 +19,18 @@
 
 -->
 
-# Java 原生接口
 
-## 安装
+# 应用编程接口
+## Java 原生接口
 
-### 依赖
+### 安装
+
+#### 依赖
 
 * JDK >= 1.8
 * Maven >= 3.6
 
-### 安装方法
+#### 安装方法
 
 在根目录下运行：
 
@@ -36,33 +38,31 @@
 mvn clean install -pl session -am -Dmaven.test.skip=true
 ```
 
-### 在 MAVEN 中使用原生接口
+#### 在 MAVEN 中使用原生接口
 
 ```xml
 <dependencies>
     <dependency>
       <groupId>org.apache.iotdb</groupId>
       <artifactId>iotdb-session</artifactId>
-      <version>0.14.0-SNAPSHOT</version>
+      <version>1.0.0</version>
     </dependency>
 </dependencies>
 ```
 
-## 语法说明
+### 语法说明
 
- - 对于 IoTDB-SQL 接口：传入的 SQL 参数需要符合 [语法规范](../Reference/Syntax-Conventions.md) ，并且针对 JAVA 字符串进行反转义，如双引号前需要加反斜杠。（即：经 JAVA 转义之后与命令行执行的 SQL 语句一致。） 
+ - 对于 IoTDB-SQL 接口：传入的 SQL 参数需要符合 [语法规范](../Syntax-Conventions/Literal-Values.md) ，并且针对 JAVA 字符串进行反转义，如双引号前需要加反斜杠。（即：经 JAVA 转义之后与命令行执行的 SQL 语句一致。） 
  - 对于其他接口： 
-   - 经参数传入的路径或路径前缀中的节点： 
-     - 在 SQL 语句中需要使用反引号（`）进行转义的，此处均不需要进行转义。 
-     - 使用单引号或双引号括起的节点，仍需要使用单引号或双引号括起，并且要针对 JAVA 字符串进行反转义。 
-     - 对于 `checkTimeseriesExists` 接口，由于内部调用了 IoTDB-SQL 接口，因此需要和 SQL 语法规范保持一致，并且针对 JAVA 字符串进行反转义。
-   - 经参数传入的标识符（如模板名）：在 SQL 语句中需要使用反引号（`）进行转义的，此处均不需要进行转义。
+   - 经参数传入的路径或路径前缀中的节点： 在 SQL 语句中需要使用反引号（`）进行转义的，此处均需要进行转义。 
+   - 经参数传入的标识符（如模板名）：在 SQL 语句中需要使用反引号（`）进行转义的，均可以不用进行转义。
+ - 语法说明相关代码示例可以参考：`example/session/src/main/java/org/apache/iotdb/SyntaxConventionRelatedExample.java`
 
-## 基本接口说明
+### 基本接口说明
 
 下面将给出 Session 对应的接口的简要介绍和对应参数：
 
-### 初始化
+#### 初始化
 
 * 初始化 Session
 
@@ -91,12 +91,12 @@ session =
         .password(String password)
         .thriftDefaultBufferSize(int thriftDefaultBufferSize)
         .thriftMaxFrameSize(int thriftMaxFrameSize)
-        .enableCacheLeader(boolean enableCacheLeader)
+        .enableRedirection(boolean enableRedirection)
         .version(Version version)
         .build();
 ```
 
-其中，version 表示客户端使用的 SQL 语义版本，用于升级 0.13 时兼容 0.12 的 SQL 语义，可能取值有：`V_0_12`、`V_0_13`。
+其中，version 表示客户端使用的 SQL 语义版本，用于升级 0.13 时兼容 0.12 的 SQL 语义，可能取值有：`V_0_12`、`V_0_13`、`V_1_0`。
 
 * 开启 Session
 
@@ -118,23 +118,23 @@ void open(boolean enableRPCCompression)
 void close()
 ```
 
-### 数据定义接口 DDL
+#### 数据定义接口 DDL
 
-#### 存储组管理
+##### Database 管理
 
-* 设置存储组
+* 设置 database
 
 ```java
 void setStorageGroup(String storageGroupId)
 ```
 
-* 删除单个或多个存储组
+* 删除单个或多个 database
 
 ```java
 void deleteStorageGroup(String storageGroup)
 void deleteStorageGroups(List<String> storageGroups)
 ```
-#### 时间序列管理
+##### 时间序列管理
 
 * 创建单个或多个时间序列
 
@@ -154,7 +154,7 @@ void createMultiTimeseries(List<String> paths, List<TSDataType> dataTypes,
 ```
 void createAlignedTimeseries(String prefixPath, List<String> measurements,
       List<TSDataType> dataTypes, List<TSEncoding> encodings,
-      CompressionType compressor, List<String> measurementAliasList);
+      List <CompressionType> compressors, List<String> measurementAliasList);
 ```
 
 注意：目前**暂不支持**使用传感器别名。
@@ -172,7 +172,7 @@ void deleteTimeseries(List<String> paths)
 boolean checkTimeseriesExists(String path)
 ```
 
-#### 元数据模版
+##### 元数据模版
 
 * 创建元数据模板，可以通过先后创建 Template、MeasurementNode 的对象，描述模板内物理量结构与类型、编码方式、压缩方式等信息，并通过以下接口创建模板
 
@@ -223,42 +223,6 @@ template.addToTemplate(nodeSpeed);
 createSchemaTemplate(flatTemplate);
 ```
 
-* 在创建概念元数据模板以后，还可以通过以下接口增加或删除模板内的物理量。请注意，已经挂载的模板不能删除内部的物理量。
-
-```java
-// 为指定模板新增一组对齐的物理量，若其父节点在模板中已经存在，且不要求对齐，则报错
-public void addAlignedMeasurementsInTemplate(String templateName,
-    						  String[] measurementsPath,
-                              TSDataType[] dataTypes,
-                              TSEncoding[] encodings,
-                              CompressionType[] compressors);
-
-// 为指定模板新增一个对齐物理量, 若其父节点在模板中已经存在，且不要求对齐，则报错
-public void addAlignedMeasurementInTemplate(String templateName,
-                                String measurementPath,
-                                TSDataType dataType,
-                                TSEncoding encoding,
-                                CompressionType compressor);
-
-
-// 为指定模板新增一个不对齐物理量, 若其父节在模板中已经存在，且要求对齐，则报错
-public void addUnalignedMeasurementInTemplate(String templateName,
-                                String measurementPath,
-                                TSDataType dataType,
-                                TSEncoding encoding,
-                                CompressionType compressor);
-                                
-// 为指定模板新增一组不对齐的物理量, 若其父节在模板中已经存在，且要求对齐，则报错
-public void addUnalignedMeasurementsIntemplate(String templateName,
-                                String[] measurementPaths,
-                                TSDataType[] dataTypes,
-                                TSEncoding[] encodings,
-                                CompressionType[] compressors);
-
-// 从指定模板中删除一个节点
-public void deleteNodeInTemplate(String templateName, String path);
-```
-
 * 对于已经创建的元数据模板，还可以通过以下接口查询模板信息：
 
 ```java
@@ -279,7 +243,7 @@ public List<String> showMeasurementsInTemplate(String templateName, String patte
 ```
 
 * 将名为'templateName'的元数据模板挂载到'prefixPath'路径下，在执行这一步之前，你需要创建名为'templateName'的元数据模板
-* **请注意，我们强烈建议您将模板设置在存储组或存储组下层的节点中，以更好地适配未来版本更新及各模块的协作**
+* **请注意，我们强烈建议您将模板设置在 database 或 database 下层的节点中，以更好地适配未来版本更新及各模块的协作**
 
 ``` java
 void setSchemaTemplate(String templateName, String prefixPath)
@@ -312,9 +276,9 @@ public void dropSchemaTemplate(String templateName);
 注意：目前不支持从曾经在'prefixPath'路径及其后代节点使用模板插入数据后（即使数据已被删除）卸载模板。
 
 
-### 数据操作接口 DML
+#### 数据操作接口 DML
 
-#### 数据写入
+##### 数据写入
 
 推荐使用 insertTablet 帮助提高写入效率
 
@@ -353,6 +317,17 @@ void insertTablets(Map<String, Tablet> tablets)
 
 * 插入一个 Record，一个 Record 是一个设备一个时间戳下多个测点的数据。这里的 value 是 Object 类型，相当于提供了一个公用接口，后面可以通过 TSDataType 将 value 强转为原类型
 
+  其中，Object 类型与 TSDataType 类型的对应关系如下表所示：
+
+  | TSDataType | Object         |
+  | ---------- | -------------- |
+  | BOOLEAN    | Boolean        |
+  | INT32      | Integer        |
+  | INT64      | Long           |
+  | FLOAT      | Float          |
+  | DOUBLE     | Double         |
+  | TEXT       | String, Binary |
+
 ```java
 void insertRecord(String prefixPath, long time, List<String> measurements,
    List<TSDataType> types, List<Object> values)
@@ -376,7 +351,7 @@ void insertRecordsOfOneDevice(String deviceId, List<Long> times,
     List<List<Object>> valuesList)
 ```
 
-#### 带有类型推断的写入
+##### 带有类型推断的写入
 
 当数据均是 String 类型时，我们可以使用如下接口，根据 value 的值进行类型推断。例如：value 为 "true" ，就可以自动推断为布尔类型。value 为 "3.2" ，就可以自动推断为数值类型。服务器需要做类型推断，可能会有额外耗时，速度较无需类型推断的写入慢
 
@@ -400,7 +375,7 @@ void insertStringRecordsOfOneDevice(String deviceId, List<Long> times,
     List<List<String>> measurementsList, List<List<String>> valuesList)
 ```
 
-#### 对齐时间序列的写入
+##### 对齐时间序列的写入
 
 对齐时间序列的写入使用 insertAlignedXXX 接口，其余与上述接口类似：
 
@@ -411,7 +386,7 @@ void insertStringRecordsOfOneDevice(String deviceId, List<Long> times,
 * insertAlignedTablet
 * insertAlignedTablets
 
-#### 数据删除
+##### 数据删除
 
 * 删除一个或多个时间序列在某个时间点前或这个时间点的数据
 
@@ -420,21 +395,49 @@ void deleteData(String path, long endTime)
 void deleteData(List<String> paths, long endTime)
 ```
 
-#### 数据查询
+##### 数据查询
 
-* 原始数据查询。时间间隔包含开始时间，不包含结束时间
-
-```java
-SessionDataSet executeRawDataQuery(List<String> paths, long startTime, long endTime)
-```
-
-* 查询最后一条时间戳大于等于某个时间点的数据
+* 时间序列原始数据范围查询：
+  - 指定的查询时间范围为左闭右开区间，包含开始时间但不包含结束时间。
 
 ```java
-SessionDataSet executeLastDataQuery(List<String> paths, long LastTime)
+SessionDataSet executeRawDataQuery(List<String> paths, long startTime, long endTime);
 ```
 
-### IoTDB-SQL 接口
+* 最新点查询：
+  - 查询最后一条时间戳大于等于某个时间点的数据。
+
+```java
+SessionDataSet executeLastDataQuery(List<String> paths, long lastTime);
+```
+
+* 聚合查询：
+  - 支持指定查询时间范围。指定的查询时间范围为左闭右开区间，包含开始时间但不包含结束时间。
+  - 支持按照时间区间分段查询。
+
+```java
+SessionDataSet executeAggregationQuery(List<String> paths, List<Aggregation> aggregations);
+
+SessionDataSet executeAggregationQuery(
+    List<String> paths, List<Aggregation> aggregations, long startTime, long endTime);
+
+SessionDataSet executeAggregationQuery(
+    List<String> paths,
+    List<Aggregation> aggregations,
+    long startTime,
+    long endTime,
+    long interval);
+
+SessionDataSet executeAggregationQuery(
+    List<String> paths,
+    List<Aggregation> aggregations,
+    long startTime,
+    long endTime,
+    long interval,
+    long slidingStep);
+```
+
+#### IoTDB-SQL 接口
 
 * 执行查询语句
 
@@ -448,7 +451,7 @@ SessionDataSet executeQueryStatement(String sql)
 void executeNonQueryStatement(String sql)
 ```
 
-### 写入测试接口 (用于分析网络带宽)
+#### 写入测试接口 (用于分析网络带宽)
 
 不实际写入数据，只将数据传输到 server 即返回
 
@@ -484,7 +487,7 @@ void testInsertTablet(Tablet tablet)
 void testInsertTablets(Map<String, Tablet> tablets)
 ```
 
-### 示例代码
+#### 示例代码
 
 浏览上述接口的详细信息，请参阅代码 ```session/src/main/java/org/apache/iotdb/session/Session.java```
 
@@ -492,7 +495,7 @@ void testInsertTablets(Map<String, Tablet> tablets)
 
 使用对齐时间序列和元数据模板的示例可以参见 `example/session/src/main/java/org/apache/iotdb/AlignedTimeseriesSessionExample.java`
 
-## 针对原生接口的连接池
+### 针对原生接口的连接池
 
 我们提供了一个针对原生接口的连接池 (`SessionPool`)，使用该接口时，你只需要指定连接池的大小，就可以在使用时从池中获取连接。
 如果超过 60s 都没得到一个连接的话，那么会打印一条警告日志，但是程序仍将继续等待。
@@ -512,7 +515,7 @@ void testInsertTablets(Map<String, Tablet> tablets)
 
 或 `example/session/src/main/java/org/apache/iotdb/SessionPoolExample.java`
 
-## 集群信息相关的接口 （仅在集群模式下可用）
+### 集群信息相关的接口 （仅在集群模式下可用）
 
 集群信息相关的接口允许用户获取如数据分区情况、节点是否当机等信息。
 要使用该 API，需要增加依赖：
@@ -522,7 +525,7 @@ void testInsertTablets(Map<String, Tablet> tablets)
     <dependency>
       <groupId>org.apache.iotdb</groupId>
       <artifactId>iotdb-thrift-cluster</artifactId>
-      <version>0.14.0-SNAPSHOT</version>
+      <version>1.0.0</version>
     </dependency>
 </dependencies>
 ```
@@ -573,7 +576,7 @@ list<Node> getRing();
 
 ```java 
 /**
- * @param path input path (should contains a Storage group name as its prefix)
+ * @param path input path (should contains a database name as its prefix)
  * @return the data partition info. If the time range only covers one data partition, the the size
  * of the list is one.
  */
@@ -583,7 +586,7 @@ list<DataPartitionEntry> getDataPartition(1:string path, 2:long startTime, 3:lon
 * 给定一个路径（应包括一个 SG 作为前缀），获取其被分到了哪个节点上：
 ```java  
 /**
- * @param path input path (should contains a Storage group name as its prefix)
+ * @param path input path (should contains a database name as its prefix)
  * @return metadata partition information
  */
 list<Node> getMetaPartition(1:string path);

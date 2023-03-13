@@ -15,13 +15,11 @@
  * limitations under the License.
  */
 import React, { ChangeEvent, PureComponent } from 'react';
-import { LegacyForms } from '@grafana/ui';
+import { InlineField, Input, SecretInput } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
-import { IoTDBOptions } from './types';
+import { IoTDBOptions, IoTDBSecureJsonData } from './types';
 
-const { FormField } = LegacyForms;
-
-interface Props extends DataSourcePluginOptionsEditorProps<IoTDBOptions> {}
+interface Props extends DataSourcePluginOptionsEditorProps<IoTDBOptions, IoTDBSecureJsonData> {}
 
 interface State {}
 
@@ -35,7 +33,7 @@ export class ConfigEditor extends PureComponent<Props, State> {
     onOptionsChange({ ...options, jsonData });
   };
 
-  onUserChange = (event: ChangeEvent<HTMLInputElement>) => {
+  onUserNameChange = (event: ChangeEvent<HTMLInputElement>) => {
     const { onOptionsChange, options } = this.props;
     const jsonData = {
       ...options.jsonData,
@@ -44,58 +42,67 @@ export class ConfigEditor extends PureComponent<Props, State> {
     onOptionsChange({ ...options, jsonData });
   };
 
-  onPassWordChange = (event: ChangeEvent<HTMLInputElement>) => {
+  // Secure field (only sent to the backend)
+  onPasswordChange = (event: ChangeEvent<HTMLInputElement>) => {
     const { onOptionsChange, options } = this.props;
-    const jsonData = {
-      ...options.jsonData,
-      password: event.target.value,
-    };
-    onOptionsChange({ ...options, jsonData });
+    onOptionsChange({
+      ...options,
+      secureJsonData: {
+        password: event.target.value,
+      },
+    });
+  };
+
+  onResetPassword = () => {
+    const { onOptionsChange, options } = this.props;
+    onOptionsChange({
+      ...options,
+      secureJsonFields: {
+        ...options.secureJsonFields,
+        password: false,
+      },
+      secureJsonData: {
+        ...options.secureJsonData,
+        password: '',
+      },
+    });
   };
 
   render() {
     const { options } = this.props;
-    const { jsonData } = options;
+    const { secureJsonFields, jsonData } = options;
+    const secureJsonData = (options.secureJsonData || {}) as IoTDBSecureJsonData;
 
     return (
       <div className="gf-form-group">
-        <div className="gf-form">
-          <FormField
-            label="URL"
-            labelWidth={6}
-            inputWidth={20}
+        <InlineField label="URL" labelWidth={12}>
+          <Input
             onChange={this.onURLChange}
             value={jsonData.url || ''}
             placeholder="please input URL"
+            width={40}
           />
-        </div>
-
-        <div className="gf-form-inline">
-          <div className="gf-form">
-            <FormField
-              value={jsonData.username || ''}
-              label="username"
-              placeholder="please input username"
-              labelWidth={6}
-              inputWidth={20}
-              onChange={this.onUserChange}
-            />
-          </div>
-        </div>
-
-        <div className="gf-form-inline">
-          <div className="gf-form">
-            <FormField
-              value={jsonData.password || ''}
-              label="password"
-              placeholder="please input password"
-              labelWidth={6}
-              inputWidth={20}
-              onChange={this.onPassWordChange}
-            />
-          </div>
-        </div>
+        </InlineField>
+        <InlineField label="username" labelWidth={12}>
+          <Input
+            onChange={this.onUserNameChange}
+            value={jsonData.username || ''}
+            placeholder="please input username"
+            width={40}
+          />
+        </InlineField>
+        <InlineField label="password" labelWidth={12}>
+          <SecretInput
+            isConfigured={(secureJsonFields && secureJsonFields.password) as boolean}
+            value={secureJsonData.password || ''}
+            placeholder="please input password"
+            width={40}
+            onReset={this.onResetPassword}
+            onChange={this.onPasswordChange}
+          />
+        </InlineField>
       </div>
+
     );
   }
 }

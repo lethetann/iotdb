@@ -20,14 +20,24 @@ package org.apache.iotdb.db.mpp.aggregation;
 
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
-import org.apache.iotdb.tsfile.read.common.TimeRange;
 import org.apache.iotdb.tsfile.read.common.block.column.Column;
 import org.apache.iotdb.tsfile.read.common.block.column.ColumnBuilder;
+import org.apache.iotdb.tsfile.utils.BitMap;
 
 public interface Accumulator {
 
-  /** Column should be like: | Time | Value | */
-  void addInput(Column[] column, TimeRange timeRange);
+  /**
+   * Column should be like: |Time | Value |
+   *
+   * <p>IgnoringNull is required when considering the row where the value of controlColumn is null
+   *
+   * <p>bitMap is required for group-by framework. When needed(eq. controlColumn is null), bitMap
+   * can guide accumulator to skip some rows
+   *
+   * <p>lastIndex is required for group-by framework indicating the row to return to leave in
+   * advance for various reasons(eq. current row doesn't satisfy the window)
+   */
+  void addInput(Column[] column, BitMap bitMap, int lastIndex);
 
   /**
    * For aggregation function like COUNT, SUM, partialResult should be single; But for AVG,
@@ -49,7 +59,8 @@ public interface Accumulator {
 
   /**
    * For aggregation function like COUNT, SUM, partialResult should be single, so its output column
-   * is single too; But for AVG, last_value, it should be double column with dictionary order.
+   * is single too; But for AVG(COUNT and SUM), LAST_VALUE(LAST_VALUE and MAX_TIME), the output
+   * columns should be double in dictionary order.
    */
   void outputIntermediate(ColumnBuilder[] tsBlockBuilder);
 

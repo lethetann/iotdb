@@ -47,7 +47,7 @@ public class OutputColumn {
 
   public OutputColumn(List<InputLocation> sourceLocations, boolean overlapped) {
     checkArgument(
-        sourceLocations != null && sourceLocations.size() > 0,
+        sourceLocations != null && !sourceLocations.isEmpty(),
         "size of sourceLocations should be larger than 0");
     this.sourceLocations = sourceLocations;
     this.overlapped = overlapped;
@@ -65,7 +65,7 @@ public class OutputColumn {
     return sourceLocations.size() == 1;
   }
 
-  public InputLocation getInputLocation(int index) {
+  public InputLocation getSourceLocation(int index) {
     checkArgument(index < sourceLocations.size(), "index is not valid");
     return sourceLocations.get(index);
   }

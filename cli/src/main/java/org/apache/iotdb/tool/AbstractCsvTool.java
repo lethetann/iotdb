@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.iotdb.tool;
 
 import org.apache.iotdb.exception.ArgsErrorException;
@@ -29,6 +30,8 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.csv.QuoteMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -56,10 +59,13 @@ public abstract class AbstractCsvTool {
 
   protected static final String TIME_ZONE_ARGS = "tz";
   protected static final String TIME_ZONE_NAME = "timeZone";
+
+  protected static final String TIMEOUT_ARGS = "t";
+  protected static final String TIMEOUT_NAME = "timeout";
   protected static final int MAX_HELP_CONSOLE_WIDTH = 92;
   protected static final String[] TIME_FORMAT =
       new String[] {"default", "long", "number", "timestamp"};
-  public static final String[] STRING_TIME_FORMAT =
+  protected static final String[] STRING_TIME_FORMAT =
       new String[] {
         "yyyy-MM-dd HH:mm:ss.SSSX",
         "yyyy/MM/dd HH:mm:ss.SSSX",
@@ -110,16 +116,17 @@ public abstract class AbstractCsvTool {
   protected static String timeZoneID;
   protected static String timeFormat;
   protected static Session session;
+  private static final Logger LOGGER = LoggerFactory.getLogger(AbstractCsvTool.class);
 
-  public AbstractCsvTool() {}
+  protected AbstractCsvTool() {}
 
   protected static String checkRequiredArg(String arg, String name, CommandLine commandLine)
       throws ArgsErrorException {
     String str = commandLine.getOptionValue(arg);
     if (str == null) {
       String msg = String.format("Required values for option '%s' not provided", name);
-      System.out.println(msg);
-      System.out.println("Use -help for more information");
+      LOGGER.info(msg);
+      LOGGER.info("Use -help for more information");
       throw new ArgsErrorException(msg);
     }
     return str;
@@ -132,8 +139,7 @@ public abstract class AbstractCsvTool {
     zoneId = ZoneId.of(session.getTimeZone());
   }
 
-  protected static void parseBasicParams(CommandLine commandLine)
-      throws ArgsErrorException, IOException {
+  protected static void parseBasicParams(CommandLine commandLine) throws ArgsErrorException {
     host = checkRequiredArg(HOST_ARGS, HOST_NAME, commandLine);
     port = checkRequiredArg(PORT_ARGS, PORT_NAME, commandLine);
     username = checkRequiredArg(USERNAME_ARGS, USERNAME_NAME, commandLine);
@@ -152,7 +158,7 @@ public abstract class AbstractCsvTool {
         return true;
       }
     }
-    System.out.printf(
+    LOGGER.info(
         "Input time format %s is not supported, "
             + "please input like yyyy-MM-dd\\ HH:mm:ss.SSS or yyyy-MM-dd'T'HH:mm:ss.SSS%n",
         timeFormat);
@@ -214,26 +220,75 @@ public abstract class AbstractCsvTool {
   public static Boolean writeCsvFile(
       List<String> headerNames, List<List<Object>> records, String filePath) {
     try {
-      CSVPrinter printer =
+      final CSVPrinterWrapper csvPrinterWrapper = new CSVPrinterWrapper(filePath);
+      if (headerNames != null) {
+        csvPrinterWrapper.printRecord(headerNames);
+      }
+      for (List<Object> CsvRecord : records) {
+        csvPrinterWrapper.printRecord(CsvRecord);
+      }
+      csvPrinterWrapper.flush();
+      csvPrinterWrapper.close();
+      return true;
+    } catch (IOException e) {
+      e.printStackTrace();
+      return false;
+    }
+  }
+
+  static class CSVPrinterWrapper {
+    private final String filePath;
+    private final CSVFormat csvFormat;
+    private CSVPrinter csvPrinter;
+
+    public CSVPrinterWrapper(String filePath) {
+      this.filePath = filePath;
+      this.csvFormat =
           CSVFormat.Builder.create(CSVFormat.DEFAULT)
               .setHeader()
               .setSkipHeaderRecord(true)
               .setEscape('\\')
               .setQuoteMode(QuoteMode.NONE)
-              .build()
-              .print(new PrintWriter(filePath));
-      if (headerNames != null) {
-        printer.printRecord(headerNames);
+              .build();
+    }
+
+    public void printRecord(final Iterable<?> values) throws IOException {
+      if (csvPrinter == null) {
+        csvPrinter = csvFormat.print(new PrintWriter(filePath));
       }
-      for (List record : records) {
-        printer.printRecord(record);
+      csvPrinter.printRecord(values);
+    }
+
+    public void print(Object value) {
+      if (csvPrinter == null) {
+        try {
+          csvPrinter = csvFormat.print(new PrintWriter(filePath));
+        } catch (IOException e) {
+          e.printStackTrace();
+          return;
+        }
       }
-      printer.flush();
-      printer.close();
-      return true;
-    } catch (IOException e) {
-      e.printStackTrace();
-      return false;
+      try {
+        csvPrinter.print(value);
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
+
+    public void println() throws IOException {
+      csvPrinter.println();
+    }
+
+    public void close() throws IOException {
+      if (csvPrinter != null) {
+        csvPrinter.close();
+      }
+    }
+
+    public void flush() throws IOException {
+      if (csvPrinter != null) {
+        csvPrinter.flush();
+      }
     }
   }
 }

@@ -20,24 +20,29 @@ package org.apache.iotdb.db.mpp.plan.planner.plan.node.write;
 
 import org.apache.iotdb.common.rpc.thrift.TRegionReplicaSet;
 import org.apache.iotdb.common.rpc.thrift.TSStatus;
-import org.apache.iotdb.commons.path.PartialPath;
 import org.apache.iotdb.commons.utils.StatusUtils;
-import org.apache.iotdb.db.engine.StorageEngineV2;
-import org.apache.iotdb.db.mpp.common.schematree.SchemaTree;
+import org.apache.iotdb.db.exception.query.QueryProcessException;
 import org.apache.iotdb.db.mpp.plan.analyze.Analysis;
+import org.apache.iotdb.db.mpp.plan.analyze.schema.ISchemaValidation;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeType;
+import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanVisitor;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.WritePlanNode;
+import org.apache.iotdb.db.utils.TimePartitionUtils;
 import org.apache.iotdb.tsfile.exception.NotImplementedException;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 public class InsertRowsNode extends InsertNode implements BatchInsertNode {
 
@@ -45,8 +50,8 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
    * Suppose there is an InsertRowsNode, which contains 5 InsertRowNodes,
    * insertRowNodeList={InsertRowNode_0, InsertRowNode_1, InsertRowNode_2, InsertRowNode_3,
    * InsertRowNode_4}, then the insertRowNodeIndexList={0, 1, 2, 3, 4} respectively. But when the
-   * InsertRowsNode is split into two InsertRowsNodes according to different storage group in
-   * cluster version, suppose that the InsertRowsNode_1's insertRowNodeList = {InsertRowNode_0,
+   * InsertRowsNode is split into two InsertRowsNodes according to different database in cluster
+   * version, suppose that the InsertRowsNode_1's insertRowNodeList = {InsertRowNode_0,
    * InsertRowNode_3, InsertRowNode_4}, then InsertRowsNode_1's insertRowNodeIndexList = {0, 3, 4};
    * InsertRowsNode_2's insertRowNodeList = {InsertRowNode_1, * InsertRowNode_2} then
    * InsertRowsNode_2's insertRowNodeIndexList= {1, 2} respectively;
@@ -60,6 +65,13 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
     super(id);
     insertRowNodeList = new ArrayList<>();
     insertRowNodeIndexList = new ArrayList<>();
+  }
+
+  public InsertRowsNode(
+      PlanNodeId id, List<Integer> insertRowNodeIndexList, List<InsertRowNode> insertRowNodeList) {
+    super(id);
+    this.insertRowNodeIndexList = insertRowNodeIndexList;
+    this.insertRowNodeList = insertRowNodeList;
   }
 
   /** record the result of insert rows */
@@ -86,6 +98,12 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
     insertRowNodeIndexList.add(index);
   }
 
+  @Override
+  public void setSearchIndex(long index) {
+    searchIndex = index;
+    insertRowNodeList.forEach(plan -> plan.setSearchIndex(index));
+  }
+
   public Map<Integer, TSStatus> getResults() {
     return results;
   }
@@ -103,13 +121,8 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
   public void addChild(PlanNode child) {}
 
   @Override
-  public boolean validateAndSetSchema(SchemaTree schemaTree) {
-    for (InsertRowNode insertRowNode : insertRowNodeList) {
-      if (!insertRowNode.validateAndSetSchema(schemaTree)) {
-        return false;
-      }
-    }
-    return true;
+  protected boolean checkAndCastDataType(int columnIndex, TSDataType dataType) {
+    return false;
   }
 
   @Override
@@ -143,39 +156,20 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
   }
 
   @Override
-  public List<PartialPath> getDevicePaths() {
-    List<PartialPath> partialPaths = new ArrayList<>();
-    for (InsertRowNode insertRowNode : insertRowNodeList) {
-      partialPaths.add(insertRowNode.devicePath);
-    }
-    return partialPaths;
+  public List<ISchemaValidation> getSchemaValidationList() {
+    return insertRowNodeList.stream()
+        .map(InsertRowNode::getSchemaValidation)
+        .collect(Collectors.toList());
   }
 
   @Override
-  public List<String[]> getMeasurementsList() {
-    List<String[]> measurementsList = new ArrayList<>();
+  public void updateAfterSchemaValidation() throws QueryProcessException {
     for (InsertRowNode insertRowNode : insertRowNodeList) {
-      measurementsList.add(insertRowNode.measurements);
+      insertRowNode.updateAfterSchemaValidation();
+      if (!this.hasFailedMeasurements() && insertRowNode.hasFailedMeasurements()) {
+        this.failedMeasurementIndex2Info = insertRowNode.failedMeasurementIndex2Info;
+      }
     }
-    return measurementsList;
-  }
-
-  @Override
-  public List<TSDataType[]> getDataTypesList() {
-    List<TSDataType[]> dataTypesList = new ArrayList<>();
-    for (InsertRowNode insertRowNode : insertRowNodeList) {
-      dataTypesList.add(insertRowNode.dataTypes);
-    }
-    return dataTypesList;
-  }
-
-  @Override
-  public List<Boolean> getAlignedList() {
-    List<Boolean> alignedList = new ArrayList<>();
-    for (InsertRowNode insertRowNode : insertRowNodeList) {
-      alignedList.add(insertRowNode.isAligned);
-    }
-    return alignedList;
   }
 
   public static InsertRowsNode deserialize(ByteBuffer byteBuffer) {
@@ -208,13 +202,27 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
   protected void serializeAttributes(ByteBuffer byteBuffer) {
     PlanNodeType.INSERT_ROWS.serialize(byteBuffer);
 
-    byteBuffer.putInt(insertRowNodeList.size());
+    ReadWriteIOUtils.write(insertRowNodeList.size(), byteBuffer);
 
     for (InsertRowNode node : insertRowNodeList) {
       node.subSerialize(byteBuffer);
     }
     for (Integer index : insertRowNodeIndexList) {
-      byteBuffer.putInt(index);
+      ReadWriteIOUtils.write(index, byteBuffer);
+    }
+  }
+
+  @Override
+  protected void serializeAttributes(DataOutputStream stream) throws IOException {
+    PlanNodeType.INSERT_ROWS.serialize(stream);
+
+    ReadWriteIOUtils.write(insertRowNodeList.size(), stream);
+
+    for (InsertRowNode node : insertRowNodeList) {
+      node.subSerialize(stream);
+    }
+    for (Integer index : insertRowNodeIndexList) {
+      ReadWriteIOUtils.write(index, stream);
     }
   }
 
@@ -229,7 +237,7 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
               .getDataPartitionInfo()
               .getDataRegionReplicaSetForWriting(
                   insertRowNode.devicePath.getFullPath(),
-                  StorageEngineV2.getTimePartitionSlot(insertRowNode.getTime()));
+                  TimePartitionUtils.getTimePartition(insertRowNode.getTime()));
       if (splitMap.containsKey(dataRegionReplicaSet)) {
         InsertRowsNode tmpNode = splitMap.get(dataRegionReplicaSet);
         tmpNode.addOneInsertRowNode(insertRowNode, i);
@@ -242,5 +250,20 @@ public class InsertRowsNode extends InsertNode implements BatchInsertNode {
     }
 
     return new ArrayList<>(splitMap.values());
+  }
+
+  @Override
+  public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
+    return visitor.visitInsertRows(this, context);
+  }
+
+  @Override
+  public long getMinTime() {
+    throw new NotImplementedException();
+  }
+
+  @Override
+  public Object getFirstValueOfIndex(int index) {
+    throw new NotImplementedException();
   }
 }

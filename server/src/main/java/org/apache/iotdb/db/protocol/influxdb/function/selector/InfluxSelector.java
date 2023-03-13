@@ -19,9 +19,9 @@
 
 package org.apache.iotdb.db.protocol.influxdb.function.selector;
 
+import org.apache.iotdb.db.mpp.plan.expression.Expression;
 import org.apache.iotdb.db.protocol.influxdb.function.InfluxFunction;
 import org.apache.iotdb.db.protocol.influxdb.function.InfluxFunctionValue;
-import org.apache.iotdb.db.query.expression.Expression;
 
 import java.util.List;
 
@@ -32,7 +32,7 @@ public abstract class InfluxSelector extends InfluxFunction {
 
   private List<Object> relatedValues;
 
-  public InfluxSelector(List<Expression> expressionList) {
+  protected InfluxSelector(List<Expression> expressionList) {
     super(expressionList);
   }
 

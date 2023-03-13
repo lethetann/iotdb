@@ -19,15 +19,15 @@
 
 package org.apache.iotdb.db.protocol.influxdb.function.aggregator;
 
+import org.apache.iotdb.db.mpp.plan.expression.Expression;
 import org.apache.iotdb.db.protocol.influxdb.function.InfluxFunction;
 import org.apache.iotdb.db.protocol.influxdb.function.InfluxFunctionValue;
-import org.apache.iotdb.db.query.expression.Expression;
 
 import java.util.List;
 
 public abstract class InfluxAggregator extends InfluxFunction {
 
-  public InfluxAggregator(List<Expression> expressionList) {
+  protected InfluxAggregator(List<Expression> expressionList) {
     super(expressionList);
   }
 

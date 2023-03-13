@@ -22,10 +22,9 @@ package org.apache.iotdb.db.mpp.aggregation;
 import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
-import org.apache.iotdb.tsfile.read.common.TimeRange;
 import org.apache.iotdb.tsfile.read.common.block.column.Column;
 import org.apache.iotdb.tsfile.read.common.block.column.ColumnBuilder;
-import org.apache.iotdb.tsfile.read.common.block.column.TimeColumn;
+import org.apache.iotdb.tsfile.utils.BitMap;
 import org.apache.iotdb.tsfile.utils.TsPrimitiveType;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -33,7 +32,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 public class ExtremeAccumulator implements Accumulator {
 
   private final TSDataType seriesDataType;
-  private TsPrimitiveType extremeResult;
+  private final TsPrimitiveType extremeResult;
   private boolean initResult;
 
   public ExtremeAccumulator(TSDataType seriesDataType) {
@@ -42,20 +41,20 @@ public class ExtremeAccumulator implements Accumulator {
   }
 
   @Override
-  public void addInput(Column[] column, TimeRange timeRange) {
+  public void addInput(Column[] column, BitMap bitMap, int lastIndex) {
     switch (seriesDataType) {
       case INT32:
-        addIntInput(column, timeRange);
-        break;
+        addIntInput(column, bitMap, lastIndex);
+        return;
       case INT64:
-        addLongInput(column, timeRange);
-        break;
+        addLongInput(column, bitMap, lastIndex);
+        return;
       case FLOAT:
-        addFloatInput(column, timeRange);
-        break;
+        addFloatInput(column, bitMap, lastIndex);
+        return;
       case DOUBLE:
-        addDoubleInput(column, timeRange);
-        break;
+        addDoubleInput(column, bitMap, lastIndex);
+        return;
       case TEXT:
       case BOOLEAN:
       default:
@@ -68,6 +67,9 @@ public class ExtremeAccumulator implements Accumulator {
   @Override
   public void addIntermediate(Column[] partialResult) {
     checkArgument(partialResult.length == 1, "partialResult of ExtremeValue should be 1");
+    if (partialResult[0].isNull(0)) {
+      return;
+    }
     switch (seriesDataType) {
       case INT32:
         updateIntResult(partialResult[0].getInt(0));
@@ -91,6 +93,9 @@ public class ExtremeAccumulator implements Accumulator {
 
   @Override
   public void addStatistics(Statistics statistics) {
+    if (statistics == null) {
+      return;
+    }
     switch (seriesDataType) {
       case INT32:
         updateIntResult((int) statistics.getMaxValue());
@@ -118,13 +123,39 @@ public class ExtremeAccumulator implements Accumulator {
 
   @Override
   public void setFinal(Column finalResult) {
-    extremeResult.setObject(finalResult.getObject(0));
+    if (finalResult.isNull(0)) {
+      return;
+    }
+    initResult = true;
+    switch (seriesDataType) {
+      case INT32:
+        extremeResult.setInt(finalResult.getInt(0));
+        break;
+      case INT64:
+        extremeResult.setLong(finalResult.getLong(0));
+        break;
+      case FLOAT:
+        extremeResult.setFloat(finalResult.getFloat(0));
+        break;
+      case DOUBLE:
+        extremeResult.setDouble(finalResult.getDouble(0));
+        break;
+      case TEXT:
+      case BOOLEAN:
+      default:
+        throw new UnSupportedDataTypeException(
+            String.format("Unsupported data type in Extreme: %s", seriesDataType));
+    }
   }
 
   // columnBuilder should be single in ExtremeAccumulator
   @Override
   public void outputIntermediate(ColumnBuilder[] columnBuilders) {
     checkArgument(columnBuilders.length == 1, "partialResult of ExtremeValue should be 1");
+    if (!initResult) {
+      columnBuilders[0].appendNull();
+      return;
+    }
     switch (seriesDataType) {
       case INT32:
         columnBuilders[0].writeInt(extremeResult.getInt());
@@ -148,6 +179,10 @@ public class ExtremeAccumulator implements Accumulator {
 
   @Override
   public void outputFinal(ColumnBuilder columnBuilder) {
+    if (!initResult) {
+      columnBuilder.appendNull();
+      return;
+    }
     switch (seriesDataType) {
       case INT32:
         columnBuilder.writeInt(extremeResult.getInt());
@@ -190,12 +225,10 @@ public class ExtremeAccumulator implements Accumulator {
     return extremeResult.getDataType();
   }
 
-  private void addIntInput(Column[] column, TimeRange timeRange) {
-    TimeColumn timeColumn = (TimeColumn) column[0];
-    for (int i = 0; i < timeColumn.getPositionCount(); i++) {
-      long curTime = timeColumn.getLong(i);
-      if (curTime >= timeRange.getMax() || curTime < timeRange.getMin()) {
-        break;
+  private void addIntInput(Column[] column, BitMap bitMap, int lastIndex) {
+    for (int i = 0; i <= lastIndex; i++) {
+      if (bitMap != null && !bitMap.isMarked(i)) {
+        continue;
       }
       if (!column[1].isNull(i)) {
         updateIntResult(column[1].getInt(i));
@@ -216,12 +249,10 @@ public class ExtremeAccumulator implements Accumulator {
     }
   }
 
-  private void addLongInput(Column[] column, TimeRange timeRange) {
-    TimeColumn timeColumn = (TimeColumn) column[0];
-    for (int i = 0; i < timeColumn.getPositionCount(); i++) {
-      long curTime = timeColumn.getLong(i);
-      if (curTime >= timeRange.getMax() || curTime < timeRange.getMin()) {
-        break;
+  private void addLongInput(Column[] column, BitMap bitMap, int lastIndex) {
+    for (int i = 0; i <= lastIndex; i++) {
+      if (bitMap != null && !bitMap.isMarked(i)) {
+        continue;
       }
       if (!column[1].isNull(i)) {
         updateLongResult(column[1].getLong(i));
@@ -242,12 +273,10 @@ public class ExtremeAccumulator implements Accumulator {
     }
   }
 
-  private void addFloatInput(Column[] column, TimeRange timeRange) {
-    TimeColumn timeColumn = (TimeColumn) column[0];
-    for (int i = 0; i < timeColumn.getPositionCount(); i++) {
-      long curTime = timeColumn.getLong(i);
-      if (curTime >= timeRange.getMax() || curTime < timeRange.getMin()) {
-        break;
+  private void addFloatInput(Column[] column, BitMap bitMap, int lastIndex) {
+    for (int i = 0; i <= lastIndex; i++) {
+      if (bitMap != null && !bitMap.isMarked(i)) {
+        continue;
       }
       if (!column[1].isNull(i)) {
         updateFloatResult(column[1].getFloat(i));
@@ -268,12 +297,10 @@ public class ExtremeAccumulator implements Accumulator {
     }
   }
 
-  private void addDoubleInput(Column[] column, TimeRange timeRange) {
-    TimeColumn timeColumn = (TimeColumn) column[0];
-    for (int i = 0; i < timeColumn.getPositionCount(); i++) {
-      long curTime = timeColumn.getLong(i);
-      if (curTime >= timeRange.getMax() || curTime < timeRange.getMin()) {
-        break;
+  private void addDoubleInput(Column[] column, BitMap bitMap, int lastIndex) {
+    for (int i = 0; i <= lastIndex; i++) {
+      if (bitMap != null && !bitMap.isMarked(i)) {
+        continue;
       }
       if (!column[1].isNull(i)) {
         updateDoubleResult(column[1].getDouble(i));

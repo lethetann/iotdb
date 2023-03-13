@@ -24,15 +24,15 @@
     <parent>
         <groupId>org.apache.iotdb</groupId>
         <artifactId>iotdb-parent</artifactId>
-        <version>0.14.0-SNAPSHOT</version>
+        <version>1.2.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>iotdb-confignode</artifactId>
     <name>IoTDB ConfigNode</name>
     <properties>
-        <iotdb.test.skip>false</iotdb.test.skip>
-        <iotdb.it.skip>${iotdb.test.skip}</iotdb.it.skip>
-        <iotdb.ut.skip>${iotdb.test.skip}</iotdb.ut.skip>
+        <confignode.test.skip>false</confignode.test.skip>
+        <confignode.it.skip>${confignode.test.skip}</confignode.it.skip>
+        <confignode.ut.skip>${confignode.test.skip}</confignode.ut.skip>
     </properties>
     <dependencies>
         <dependency>
@@ -51,14 +51,23 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.apache.iotdb</groupId>
+            <artifactId>pipe-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
-            <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.powermock</groupId>
+            <artifactId>powermock-api-mockito2</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
     <build>
@@ -102,6 +111,45 @@
                     </execution>
                 </executions>
             </plugin>
+            <!--using `mvn test` to run UT, `mvn verify` to run ITs
+                        Reference: https://antoniogoncalves.org/2012/12/13/lets-turn-integration-tests-with-maven-to-a-first-class-citizen/-->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skipTests>${confignode.ut.skip}</skipTests>
+                    <reuseForks>false</reuseForks>
+                    <runOrder>random</runOrder>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
+    <profiles>
+        <profile>
+            <id>skipConfigNodeTests</id>
+            <activation>
+                <property>
+                    <name>skipTests</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <properties>
+                <confignode.test.skip>true</confignode.test.skip>
+                <confignode.ut.skip>true</confignode.ut.skip>
+                <confignode.it.skip>true</confignode.it.skip>
+            </properties>
+        </profile>
+        <profile>
+            <id>skipUT_ConfigNode_Tests</id>
+            <activation>
+                <property>
+                    <name>skipUTs</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <properties>
+                <confignode.ut.skip>true</confignode.ut.skip>
+            </properties>
+        </profile>
+    </profiles>
 </project>

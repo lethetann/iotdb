@@ -19,28 +19,28 @@
 package org.apache.iotdb.db.mpp.plan.planner.plan.node.source;
 
 import org.apache.iotdb.common.rpc.thrift.TRegionReplicaSet;
-import org.apache.iotdb.commons.utils.ThriftCommonsSerDeUtils;
-import org.apache.iotdb.db.metadata.path.MeasurementPath;
-import org.apache.iotdb.db.metadata.path.PathDeserializeUtil;
+import org.apache.iotdb.commons.path.MeasurementPath;
+import org.apache.iotdb.commons.path.PartialPath;
+import org.apache.iotdb.commons.path.PathDeserializeUtil;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeType;
+import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeUtil;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanVisitor;
-import org.apache.iotdb.db.mpp.plan.statement.component.OrderBy;
+import org.apache.iotdb.db.mpp.plan.statement.component.Ordering;
 import org.apache.iotdb.tsfile.read.filter.basic.Filter;
 import org.apache.iotdb.tsfile.read.filter.factory.FilterFactory;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
 import com.google.common.collect.ImmutableList;
 
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * SeriesScanNode is responsible for read data a specific series. When reading data, the
@@ -49,18 +49,15 @@ import java.util.Set;
  *
  * <p>Children type: no child is allowed for SeriesScanNode
  */
-public class SeriesScanNode extends SourceNode {
+public class SeriesScanNode extends SeriesSourceNode {
 
   // The path of the target series which will be scanned.
   private final MeasurementPath seriesPath;
 
-  // all the sensors in seriesPath's device of current query
-  @Nonnull private final Set<String> allSensors;
-
   // The order to traverse the data.
   // Currently, we only support TIMESTAMP_ASC and TIMESTAMP_DESC here.
   // The default order is TIMESTAMP_ASC, which means "order by timestamp asc"
-  private OrderBy scanOrder = OrderBy.TIMESTAMP_ASC;
+  private Ordering scanOrder = Ordering.ASC;
 
   // time filter for current series, could be null if doesn't exist
   @Nullable private Filter timeFilter;
@@ -69,38 +66,34 @@ public class SeriesScanNode extends SourceNode {
   @Nullable private Filter valueFilter;
 
   // Limit for result set. The default value is -1, which means no limit
-  private int limit;
+  private long limit;
 
   // offset for result set. The default value is 0
-  private int offset;
+  private long offset;
 
   // The id of DataRegion where the node will run
   private TRegionReplicaSet regionReplicaSet;
 
-  public SeriesScanNode(
-      PlanNodeId id, MeasurementPath seriesPath, @Nonnull Set<String> allSensors) {
+  public SeriesScanNode(PlanNodeId id, MeasurementPath seriesPath) {
     super(id);
     this.seriesPath = seriesPath;
-    this.allSensors = allSensors;
   }
 
-  public SeriesScanNode(
-      PlanNodeId id, MeasurementPath seriesPath, Set<String> allSensors, OrderBy scanOrder) {
-    this(id, seriesPath, allSensors);
+  public SeriesScanNode(PlanNodeId id, MeasurementPath seriesPath, Ordering scanOrder) {
+    this(id, seriesPath);
     this.scanOrder = scanOrder;
   }
 
   public SeriesScanNode(
       PlanNodeId id,
       MeasurementPath seriesPath,
-      Set<String> allSensors,
-      OrderBy scanOrder,
+      Ordering scanOrder,
       @Nullable Filter timeFilter,
       @Nullable Filter valueFilter,
-      int limit,
-      int offset,
+      long limit,
+      long offset,
       TRegionReplicaSet dataRegionReplicaSet) {
-    this(id, seriesPath, allSensors, scanOrder);
+    this(id, seriesPath, scanOrder);
     this.timeFilter = timeFilter;
     this.valueFilter = valueFilter;
     this.limit = limit;
@@ -124,32 +117,27 @@ public class SeriesScanNode extends SourceNode {
     this.regionReplicaSet = dataRegion;
   }
 
-  public int getLimit() {
+  public long getLimit() {
     return limit;
   }
 
-  public int getOffset() {
+  public long getOffset() {
     return offset;
   }
 
-  public void setLimit(int limit) {
+  public void setLimit(long limit) {
     this.limit = limit;
   }
 
-  public void setOffset(int offset) {
+  public void setOffset(long offset) {
     this.offset = offset;
   }
 
-  @Nonnull
-  public Set<String> getAllSensors() {
-    return allSensors;
-  }
-
-  public OrderBy getScanOrder() {
+  public Ordering getScanOrder() {
     return scanOrder;
   }
 
-  public void setScanOrder(OrderBy scanOrder) {
+  public void setScanOrder(Ordering scanOrder) {
     this.scanOrder = scanOrder;
   }
 
@@ -160,6 +148,10 @@ public class SeriesScanNode extends SourceNode {
   @Nullable
   public Filter getTimeFilter() {
     return timeFilter;
+  }
+
+  public void setTimeFilter(@Nullable Filter timeFilter) {
+    this.timeFilter = timeFilter;
   }
 
   @Nullable
@@ -187,7 +179,6 @@ public class SeriesScanNode extends SourceNode {
     return new SeriesScanNode(
         getPlanNodeId(),
         getSeriesPath(),
-        getAllSensors(),
         getScanOrder(),
         getTimeFilter(),
         getValueFilter(),
@@ -210,10 +201,6 @@ public class SeriesScanNode extends SourceNode {
   protected void serializeAttributes(ByteBuffer byteBuffer) {
     PlanNodeType.SERIES_SCAN.serialize(byteBuffer);
     seriesPath.serialize(byteBuffer);
-    ReadWriteIOUtils.write(allSensors.size(), byteBuffer);
-    for (String sensor : allSensors) {
-      ReadWriteIOUtils.write(sensor, byteBuffer);
-    }
     ReadWriteIOUtils.write(scanOrder.ordinal(), byteBuffer);
     if (timeFilter == null) {
       ReadWriteIOUtils.write((byte) 0, byteBuffer);
@@ -229,17 +216,32 @@ public class SeriesScanNode extends SourceNode {
     }
     ReadWriteIOUtils.write(limit, byteBuffer);
     ReadWriteIOUtils.write(offset, byteBuffer);
-    ThriftCommonsSerDeUtils.writeTRegionReplicaSet(regionReplicaSet, byteBuffer);
+  }
+
+  @Override
+  protected void serializeAttributes(DataOutputStream stream) throws IOException {
+    PlanNodeType.SERIES_SCAN.serialize(stream);
+    seriesPath.serialize(stream);
+    ReadWriteIOUtils.write(scanOrder.ordinal(), stream);
+    if (timeFilter == null) {
+      ReadWriteIOUtils.write((byte) 0, stream);
+    } else {
+      ReadWriteIOUtils.write((byte) 1, stream);
+      timeFilter.serialize(stream);
+    }
+    if (valueFilter == null) {
+      ReadWriteIOUtils.write((byte) 0, stream);
+    } else {
+      ReadWriteIOUtils.write((byte) 1, stream);
+      valueFilter.serialize(stream);
+    }
+    ReadWriteIOUtils.write(limit, stream);
+    ReadWriteIOUtils.write(offset, stream);
   }
 
   public static SeriesScanNode deserialize(ByteBuffer byteBuffer) {
     MeasurementPath partialPath = (MeasurementPath) PathDeserializeUtil.deserialize(byteBuffer);
-    int allSensorSize = ReadWriteIOUtils.readInt(byteBuffer);
-    Set<String> allSensors = new HashSet<>();
-    for (int i = 0; i < allSensorSize; i++) {
-      allSensors.add(ReadWriteIOUtils.readString(byteBuffer));
-    }
-    OrderBy scanOrder = OrderBy.values()[ReadWriteIOUtils.readInt(byteBuffer)];
+    Ordering scanOrder = Ordering.values()[ReadWriteIOUtils.readInt(byteBuffer)];
     byte isNull = ReadWriteIOUtils.readByte(byteBuffer);
     Filter timeFilter = null;
     if (isNull == 1) {
@@ -250,28 +252,20 @@ public class SeriesScanNode extends SourceNode {
     if (isNull == 1) {
       valueFilter = FilterFactory.deserialize(byteBuffer);
     }
-    int limit = ReadWriteIOUtils.readInt(byteBuffer);
-    int offset = ReadWriteIOUtils.readInt(byteBuffer);
-    TRegionReplicaSet dataRegionReplicaSet =
-        ThriftCommonsSerDeUtils.readTRegionReplicaSet(byteBuffer);
+    long limit = ReadWriteIOUtils.readLong(byteBuffer);
+    long offset = ReadWriteIOUtils.readLong(byteBuffer);
     PlanNodeId planNodeId = PlanNodeId.deserialize(byteBuffer);
     return new SeriesScanNode(
-        planNodeId,
-        partialPath,
-        allSensors,
-        scanOrder,
-        timeFilter,
-        valueFilter,
-        limit,
-        offset,
-        dataRegionReplicaSet);
+        planNodeId, partialPath, scanOrder, timeFilter, valueFilter, limit, offset, null);
   }
 
   @Override
   public String toString() {
     return String.format(
         "SeriesScanNode-%s:[SeriesPath: %s, DataRegion: %s]",
-        this.getPlanNodeId(), this.getSeriesPath(), this.getRegionReplicaSet());
+        this.getPlanNodeId(),
+        this.getSeriesPath(),
+        PlanNodeUtil.printRegionReplicaSet(getRegionReplicaSet()));
   }
 
   @Override
@@ -289,7 +283,6 @@ public class SeriesScanNode extends SourceNode {
     return limit == that.limit
         && offset == that.offset
         && seriesPath.equals(that.seriesPath)
-        && allSensors.equals(that.allSensors)
         && scanOrder == that.scanOrder
         && Objects.equals(timeFilter, that.timeFilter)
         && Objects.equals(valueFilter, that.valueFilter)
@@ -301,12 +294,21 @@ public class SeriesScanNode extends SourceNode {
     return Objects.hash(
         super.hashCode(),
         seriesPath,
-        allSensors,
         scanOrder,
         timeFilter,
         valueFilter,
         limit,
         offset,
         regionReplicaSet);
+  }
+
+  @Override
+  public PartialPath getPartitionPath() {
+    return seriesPath;
+  }
+
+  @Override
+  public Filter getPartitionTimeFilter() {
+    return timeFilter;
   }
 }

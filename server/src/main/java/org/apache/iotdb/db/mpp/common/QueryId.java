@@ -21,6 +21,8 @@ package org.apache.iotdb.db.mpp.common;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
@@ -30,6 +32,8 @@ import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class QueryId {
+
+  public static QueryId mockQueryId = QueryId.valueOf("mock_query_id");
 
   private final String id;
 
@@ -130,6 +134,10 @@ public class QueryId {
 
   public void serialize(ByteBuffer byteBuffer) {
     ReadWriteIOUtils.write(this.id, byteBuffer);
+  }
+
+  public void serialize(DataOutputStream stream) throws IOException {
+    ReadWriteIOUtils.write(this.id, stream);
   }
 
   public static QueryId deserialize(ByteBuffer byteBuffer) {

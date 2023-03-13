@@ -22,12 +22,16 @@ import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeId;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeType;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanVisitor;
-import org.apache.iotdb.db.mpp.plan.statement.component.OrderBy;
+import org.apache.iotdb.db.mpp.plan.planner.plan.parameter.OrderByParameter;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -38,33 +42,44 @@ import java.util.Objects;
  * same between these TsBlocks. If the input TsBlock contains n columns, the device-based view will
  * contain n+1 columns where the new column is Device column.
  */
-public class DeviceViewNode extends ProcessNode {
+public class DeviceViewNode extends MultiChildProcessNode {
 
   // The result output order, which could sort by device and time.
-  // The size of this list is 2 and the first OrderBy in this list has higher priority.
-  private final List<OrderBy> mergeOrders;
+  // The size of this list is 2 and the first SortItem in this list has higher priority.
+  private final OrderByParameter mergeOrderParameter;
 
   // The size devices and children should be the same.
   private final List<String> devices = new ArrayList<>();
 
-  // each child node whose output TsBlock contains the data belonged to one device.
-  private final List<PlanNode> children = new ArrayList<>();
+  // Device column and measurement columns in result output
+  private final List<String> outputColumnNames;
 
-  // measurement columns in result output
-  private final List<String> measurements;
+  // e.g. [s1,s2,s3] is query, but [s1, s3] exists in device1, then device1 -> [1, 3], s1 is 1 but
+  // not 0 because device is the first column
+  private final Map<String, List<Integer>> deviceToMeasurementIndexesMap;
 
-  public DeviceViewNode(PlanNodeId id, List<OrderBy> mergeOrders, List<String> measurements) {
+  public DeviceViewNode(
+      PlanNodeId id,
+      OrderByParameter mergeOrderParameter,
+      List<String> outputColumnNames,
+      Map<String, List<Integer>> deviceToMeasurementIndexesMap) {
     super(id);
-    this.mergeOrders = mergeOrders;
-    this.measurements = measurements;
+    this.mergeOrderParameter = mergeOrderParameter;
+    this.outputColumnNames = outputColumnNames;
+    this.deviceToMeasurementIndexesMap = deviceToMeasurementIndexesMap;
   }
 
   public DeviceViewNode(
-      PlanNodeId id, List<OrderBy> mergeOrders, List<String> measurements, List<String> devices) {
+      PlanNodeId id,
+      OrderByParameter mergeOrderParameter,
+      List<String> outputColumnNames,
+      List<String> devices,
+      Map<String, List<Integer>> deviceToMeasurementIndexesMap) {
     super(id);
-    this.mergeOrders = mergeOrders;
-    this.measurements = measurements;
+    this.mergeOrderParameter = mergeOrderParameter;
+    this.outputColumnNames = outputColumnNames;
     this.devices.addAll(devices);
+    this.deviceToMeasurementIndexesMap = deviceToMeasurementIndexesMap;
   }
 
   public void addChildDeviceNode(String deviceName, PlanNode childNode) {
@@ -76,29 +91,27 @@ public class DeviceViewNode extends ProcessNode {
     return devices;
   }
 
-  @Override
-  public List<PlanNode> getChildren() {
-    return children;
-  }
-
-  @Override
-  public void addChild(PlanNode child) {
-    this.children.add(child);
-  }
-
-  @Override
-  public int allowedChildCount() {
-    return CHILD_COUNT_NO_LIMIT;
+  public Map<String, List<Integer>> getDeviceToMeasurementIndexesMap() {
+    return deviceToMeasurementIndexesMap;
   }
 
   @Override
   public PlanNode clone() {
-    return new DeviceViewNode(getPlanNodeId(), mergeOrders, measurements, devices);
+    return new DeviceViewNode(
+        getPlanNodeId(),
+        mergeOrderParameter,
+        outputColumnNames,
+        devices,
+        deviceToMeasurementIndexesMap);
+  }
+
+  public OrderByParameter getMergeOrderParameter() {
+    return mergeOrderParameter;
   }
 
   @Override
   public List<String> getOutputColumnNames() {
-    return measurements;
+    return outputColumnNames;
   }
 
   @Override
@@ -109,27 +122,54 @@ public class DeviceViewNode extends ProcessNode {
   @Override
   protected void serializeAttributes(ByteBuffer byteBuffer) {
     PlanNodeType.DEVICE_VIEW.serialize(byteBuffer);
-    ReadWriteIOUtils.write(mergeOrders.get(0).ordinal(), byteBuffer);
-    ReadWriteIOUtils.write(mergeOrders.get(1).ordinal(), byteBuffer);
-    ReadWriteIOUtils.write(measurements.size(), byteBuffer);
-    for (String measurement : measurements) {
-      ReadWriteIOUtils.write(measurement, byteBuffer);
+    mergeOrderParameter.serializeAttributes(byteBuffer);
+    ReadWriteIOUtils.write(outputColumnNames.size(), byteBuffer);
+    for (String column : outputColumnNames) {
+      ReadWriteIOUtils.write(column, byteBuffer);
     }
     ReadWriteIOUtils.write(devices.size(), byteBuffer);
     for (String deviceName : devices) {
       ReadWriteIOUtils.write(deviceName, byteBuffer);
     }
+    ReadWriteIOUtils.write(deviceToMeasurementIndexesMap.size(), byteBuffer);
+    for (Map.Entry<String, List<Integer>> entry : deviceToMeasurementIndexesMap.entrySet()) {
+      ReadWriteIOUtils.write(entry.getKey(), byteBuffer);
+      ReadWriteIOUtils.write(entry.getValue().size(), byteBuffer);
+      for (Integer index : entry.getValue()) {
+        ReadWriteIOUtils.write(index, byteBuffer);
+      }
+    }
+  }
+
+  @Override
+  protected void serializeAttributes(DataOutputStream stream) throws IOException {
+    PlanNodeType.DEVICE_VIEW.serialize(stream);
+    mergeOrderParameter.serializeAttributes(stream);
+    ReadWriteIOUtils.write(outputColumnNames.size(), stream);
+    for (String column : outputColumnNames) {
+      ReadWriteIOUtils.write(column, stream);
+    }
+    ReadWriteIOUtils.write(devices.size(), stream);
+    for (String deviceName : devices) {
+      ReadWriteIOUtils.write(deviceName, stream);
+    }
+    ReadWriteIOUtils.write(deviceToMeasurementIndexesMap.size(), stream);
+    for (Map.Entry<String, List<Integer>> entry : deviceToMeasurementIndexesMap.entrySet()) {
+      ReadWriteIOUtils.write(entry.getKey(), stream);
+      ReadWriteIOUtils.write(entry.getValue().size(), stream);
+      for (Integer index : entry.getValue()) {
+        ReadWriteIOUtils.write(index, stream);
+      }
+    }
   }
 
   public static DeviceViewNode deserialize(ByteBuffer byteBuffer) {
-    List<OrderBy> mergeOrders = new ArrayList<>();
-    mergeOrders.add(OrderBy.values()[ReadWriteIOUtils.readInt(byteBuffer)]);
-    mergeOrders.add(OrderBy.values()[ReadWriteIOUtils.readInt(byteBuffer)]);
-    int measurementsSize = ReadWriteIOUtils.readInt(byteBuffer);
-    List<String> measurements = new ArrayList<>();
-    while (measurementsSize > 0) {
-      measurements.add(ReadWriteIOUtils.readString(byteBuffer));
-      measurementsSize--;
+    OrderByParameter mergeOrderParameter = OrderByParameter.deserialize(byteBuffer);
+    int columnSize = ReadWriteIOUtils.readInt(byteBuffer);
+    List<String> outputColumnNames = new ArrayList<>();
+    while (columnSize > 0) {
+      outputColumnNames.add(ReadWriteIOUtils.readString(byteBuffer));
+      columnSize--;
     }
     int devicesSize = ReadWriteIOUtils.readInt(byteBuffer);
     List<String> devices = new ArrayList<>();
@@ -137,8 +177,22 @@ public class DeviceViewNode extends ProcessNode {
       devices.add(ReadWriteIOUtils.readString(byteBuffer));
       devicesSize--;
     }
+    int mapSize = ReadWriteIOUtils.readInt(byteBuffer);
+    Map<String, List<Integer>> deviceToMeasurementIndexesMap = new HashMap<>(mapSize);
+    while (mapSize > 0) {
+      String deviceName = ReadWriteIOUtils.readString(byteBuffer);
+      int listSize = ReadWriteIOUtils.readInt(byteBuffer);
+      List<Integer> indexes = new ArrayList<>(listSize);
+      while (listSize > 0) {
+        indexes.add(ReadWriteIOUtils.readInt(byteBuffer));
+        listSize--;
+      }
+      deviceToMeasurementIndexesMap.put(deviceName, indexes);
+      mapSize--;
+    }
     PlanNodeId planNodeId = PlanNodeId.deserialize(byteBuffer);
-    return new DeviceViewNode(planNodeId, mergeOrders, measurements, devices);
+    return new DeviceViewNode(
+        planNodeId, mergeOrderParameter, outputColumnNames, devices, deviceToMeasurementIndexesMap);
   }
 
   @Override
@@ -153,14 +207,24 @@ public class DeviceViewNode extends ProcessNode {
       return false;
     }
     DeviceViewNode that = (DeviceViewNode) o;
-    return mergeOrders.equals(that.mergeOrders)
+    return mergeOrderParameter.equals(that.mergeOrderParameter)
         && devices.equals(that.devices)
-        && children.equals(that.children)
-        && measurements.equals(that.measurements);
+        && outputColumnNames.equals(that.outputColumnNames)
+        && deviceToMeasurementIndexesMap.equals(that.deviceToMeasurementIndexesMap);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(super.hashCode(), mergeOrders, devices, children, measurements);
+    return Objects.hash(
+        super.hashCode(),
+        mergeOrderParameter,
+        devices,
+        outputColumnNames,
+        deviceToMeasurementIndexesMap);
+  }
+
+  @Override
+  public String toString() {
+    return "DeviceView-" + this.getPlanNodeId();
   }
 }

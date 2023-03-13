@@ -21,10 +21,9 @@ package org.apache.iotdb.db.mpp.aggregation;
 
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
-import org.apache.iotdb.tsfile.read.common.TimeRange;
 import org.apache.iotdb.tsfile.read.common.block.column.Column;
 import org.apache.iotdb.tsfile.read.common.block.column.ColumnBuilder;
-import org.apache.iotdb.tsfile.read.common.block.column.TimeColumn;
+import org.apache.iotdb.tsfile.utils.BitMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -35,16 +34,23 @@ public class CountAccumulator implements Accumulator {
   public CountAccumulator() {}
 
   // Column should be like: | Time | Value |
+
   @Override
-  public void addInput(Column[] column, TimeRange timeRange) {
-    TimeColumn timeColumn = (TimeColumn) column[0];
-    for (int i = 0; i < timeColumn.getPositionCount(); i++) {
-      long curTime = timeColumn.getLong(i);
-      if (curTime >= timeRange.getMax() || curTime < timeRange.getMin()) {
-        break;
-      }
-      if (!column[1].isNull(i)) {
-        countValue++;
+  public void addInput(Column[] column, BitMap bitMap, int lastIndex) {
+    int curPositionCount = column[0].getPositionCount();
+
+    if (!column[1].mayHaveNull()
+        && lastIndex == curPositionCount - 1
+        && ((bitMap == null) || bitMap.isAllMarked())) {
+      countValue += curPositionCount;
+    } else {
+      for (int i = 0; i <= lastIndex; i++) {
+        if (bitMap != null && !bitMap.isMarked(i)) {
+          continue;
+        }
+        if (!column[1].isNull(i)) {
+          countValue++;
+        }
       }
     }
   }
@@ -53,17 +59,26 @@ public class CountAccumulator implements Accumulator {
   @Override
   public void addIntermediate(Column[] partialResult) {
     checkArgument(partialResult.length == 1, "partialResult of Count should be 1");
+    if (partialResult[0].isNull(0)) {
+      return;
+    }
     countValue += partialResult[0].getLong(0);
   }
 
   @Override
   public void addStatistics(Statistics statistics) {
+    if (statistics == null) {
+      return;
+    }
     countValue += statistics.getCount();
   }
 
   // finalResult should be single column, like: | finalCountValue |
   @Override
   public void setFinal(Column finalResult) {
+    if (finalResult.isNull(0)) {
+      return;
+    }
     countValue = finalResult.getLong(0);
   }
 

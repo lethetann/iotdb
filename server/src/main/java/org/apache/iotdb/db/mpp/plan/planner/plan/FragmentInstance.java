@@ -20,62 +20,110 @@ package org.apache.iotdb.db.mpp.plan.planner.plan;
 
 import org.apache.iotdb.common.rpc.thrift.TDataNodeLocation;
 import org.apache.iotdb.common.rpc.thrift.TRegionReplicaSet;
+import org.apache.iotdb.commons.exception.runtime.SerializationRunTimeException;
+import org.apache.iotdb.commons.partition.ExecutorType;
+import org.apache.iotdb.commons.utils.TestOnly;
 import org.apache.iotdb.commons.utils.ThriftCommonsSerDeUtils;
 import org.apache.iotdb.consensus.common.request.IConsensusRequest;
+import org.apache.iotdb.db.conf.IoTDBConfig;
+import org.apache.iotdb.db.conf.IoTDBDescriptor;
 import org.apache.iotdb.db.mpp.common.FragmentInstanceId;
+import org.apache.iotdb.db.mpp.common.SessionInfo;
 import org.apache.iotdb.db.mpp.plan.analyze.QueryType;
-import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNode;
 import org.apache.iotdb.db.mpp.plan.planner.plan.node.PlanNodeUtil;
-import org.apache.iotdb.db.mpp.plan.planner.plan.node.sink.FragmentSinkNode;
 import org.apache.iotdb.tsfile.read.filter.basic.Filter;
 import org.apache.iotdb.tsfile.read.filter.factory.FilterFactory;
+import org.apache.iotdb.tsfile.utils.PublicBAOS;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public class FragmentInstance implements IConsensusRequest {
+
+  private final Logger logger = LoggerFactory.getLogger(FragmentInstance.class);
+
+  private static final IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
 
   private final FragmentInstanceId id;
   private final QueryType type;
   // The reference of PlanFragment which this instance is generated from
   private final PlanFragment fragment;
 
-  // The Region where the FragmentInstance should run
-  private TRegionReplicaSet regionReplicaSet;
+  // Where the FragmentInstance should run
+  private ExecutorType executorType;
 
   private TDataNodeLocation hostDataNode;
 
   private Filter timeFilter;
 
+  private final long timeOut;
+
+  private boolean isRoot;
+
+  private final SessionInfo sessionInfo;
+
   // We can add some more params for a specific FragmentInstance
   // So that we can make different FragmentInstance owns different data range.
 
   public FragmentInstance(
-      PlanFragment fragment, FragmentInstanceId id, Filter timeFilter, QueryType type) {
+      PlanFragment fragment,
+      FragmentInstanceId id,
+      Filter timeFilter,
+      QueryType type,
+      long timeOut,
+      SessionInfo sessionInfo) {
     this.fragment = fragment;
     this.timeFilter = timeFilter;
     this.id = id;
     this.type = type;
+    this.timeOut = timeOut > 0 ? timeOut : config.getQueryTimeoutThreshold();
+    this.isRoot = false;
+    this.sessionInfo = sessionInfo;
   }
 
-  public TRegionReplicaSet getDataRegionId() {
-    return regionReplicaSet;
+  public FragmentInstance(
+      PlanFragment fragment,
+      FragmentInstanceId id,
+      Filter timeFilter,
+      QueryType type,
+      long timeOut,
+      SessionInfo sessionInfo,
+      boolean isRoot) {
+    this(fragment, id, timeFilter, type, timeOut, sessionInfo);
+    this.isRoot = isRoot;
   }
 
-  public void setDataRegionAndHost(TRegionReplicaSet regionReplicaSet) {
-    this.regionReplicaSet = regionReplicaSet;
-    // TODO: (xingtanzjr) We select the first Endpoint as the default target host for current
-    // instance
-    this.hostDataNode = regionReplicaSet.getDataNodeLocations().get(0);
+  public void setExecutorAndHost(ExecutorType executorType) {
+    if (executorType == null) {
+      return;
+    }
+    this.executorType = executorType;
+    this.hostDataNode = executorType.getDataNodeLocation();
+  }
+
+  // Although the HostDataNode is set in method setDataRegionAndHost(),
+  // we still keep another method for customized needs
+  public void setHostDataNode(TDataNodeLocation hostDataNode) {
+    this.hostDataNode = hostDataNode;
+  }
+
+  public ExecutorType getExecutorType() {
+    return executorType;
+  }
+
+  @TestOnly
+  public void setExecutorType(ExecutorType executorType) {
+    this.executorType = executorType;
   }
 
   public TRegionReplicaSet getRegionReplicaSet() {
-    return regionReplicaSet;
-  }
-
-  public void setRegionReplicaSet(TRegionReplicaSet regionReplicaSet) {
-    this.regionReplicaSet = regionReplicaSet;
+    return executorType.getRegionReplicaSet();
   }
 
   public PlanFragment getFragment() {
@@ -86,17 +134,8 @@ public class FragmentInstance implements IConsensusRequest {
     return id;
   }
 
-  public String getDownstreamInfo() {
-    PlanNode root = getFragment().getRoot();
-    if (root instanceof FragmentSinkNode) {
-      FragmentSinkNode sink = (FragmentSinkNode) root;
-      return String.format(
-          "(%s, %s, %s)",
-          sink.getDownStreamEndpoint(),
-          sink.getDownStreamInstanceId(),
-          sink.getDownStreamPlanNodeId());
-    }
-    return "<No downstream>";
+  public boolean isRoot() {
+    return isRoot;
   }
 
   public void setTimeFilter(Filter timeFilter) {
@@ -116,41 +155,61 @@ public class FragmentInstance implements IConsensusRequest {
     ret.append(String.format("FragmentInstance-%s:", getId()));
     ret.append(
         String.format(
-            "Host: %s", getHostDataNode() == null ? "Not set" : getHostDataNode().dataNodeId));
+            "Host: %s ",
+            getHostDataNode() == null
+                ? "Not set"
+                : getHostDataNode().dataNodeId + " - " + getHostDataNode().internalEndPoint));
     ret.append(
         String.format(
-            "Region: %s",
+            "Region: %s ",
             getRegionReplicaSet() == null ? "Not set" : getRegionReplicaSet().getRegionId()));
-    ret.append("---- Plan Node Tree ----\n");
-    ret.append(PlanNodeUtil.nodeToString(getFragment().getRoot()));
+    ret.append("\n---- Plan Node Tree ----\n");
+    ret.append(PlanNodeUtil.nodeToString(getFragment().getPlanNodeTree()));
+    ret.append(String.format("timeOut-%s:", getTimeOut()));
     return ret.toString();
   }
 
   public static FragmentInstance deserializeFrom(ByteBuffer buffer) {
     FragmentInstanceId id = FragmentInstanceId.deserialize(buffer);
     PlanFragment planFragment = PlanFragment.deserialize(buffer);
+    long timeOut = ReadWriteIOUtils.readLong(buffer);
+    boolean hasSessionInfo = ReadWriteIOUtils.readBool(buffer);
+    SessionInfo sessionInfo = hasSessionInfo ? SessionInfo.deserializeFrom(buffer) : null;
     boolean hasTimeFilter = ReadWriteIOUtils.readBool(buffer);
     Filter timeFilter = hasTimeFilter ? FilterFactory.deserialize(buffer) : null;
     QueryType queryType = QueryType.values()[ReadWriteIOUtils.readInt(buffer)];
     FragmentInstance fragmentInstance =
-        new FragmentInstance(planFragment, id, timeFilter, queryType);
-    fragmentInstance.regionReplicaSet = ThriftCommonsSerDeUtils.readTRegionReplicaSet(buffer);
-    fragmentInstance.hostDataNode = ThriftCommonsSerDeUtils.readTDataNodeLocation(buffer);
-
+        new FragmentInstance(planFragment, id, timeFilter, queryType, timeOut, sessionInfo);
+    boolean hasHostDataNode = ReadWriteIOUtils.readBool(buffer);
+    fragmentInstance.hostDataNode =
+        hasHostDataNode ? ThriftCommonsSerDeUtils.deserializeTDataNodeLocation(buffer) : null;
     return fragmentInstance;
   }
 
-  @Override
-  public void serializeRequest(ByteBuffer buffer) {
-    id.serialize(buffer);
-    fragment.serialize(buffer);
-    ReadWriteIOUtils.write(timeFilter != null, buffer);
-    if (timeFilter != null) {
-      timeFilter.serialize(buffer);
+  public ByteBuffer serializeToByteBuffer() {
+    try (PublicBAOS publicBAOS = new PublicBAOS();
+        DataOutputStream outputStream = new DataOutputStream(publicBAOS)) {
+      id.serialize(outputStream);
+      fragment.serialize(outputStream);
+      ReadWriteIOUtils.write(timeOut, outputStream);
+      ReadWriteIOUtils.write(sessionInfo != null, outputStream);
+      if (sessionInfo != null) {
+        sessionInfo.serialize(outputStream);
+      }
+      ReadWriteIOUtils.write(timeFilter != null, outputStream);
+      if (timeFilter != null) {
+        timeFilter.serialize(outputStream);
+      }
+      ReadWriteIOUtils.write(type.ordinal(), outputStream);
+      ReadWriteIOUtils.write(hostDataNode != null, outputStream);
+      if (hostDataNode != null) {
+        ThriftCommonsSerDeUtils.serializeTDataNodeLocation(hostDataNode, outputStream);
+      }
+      return ByteBuffer.wrap(publicBAOS.getBuf(), 0, publicBAOS.size());
+    } catch (IOException e) {
+      logger.error("Unexpected error occurs when serializing this FragmentInstance.", e);
+      throw new SerializationRunTimeException(e);
     }
-    ReadWriteIOUtils.write(type.ordinal(), buffer);
-    ThriftCommonsSerDeUtils.writeTRegionReplicaSet(regionReplicaSet, buffer);
-    ThriftCommonsSerDeUtils.writeTDataNodeLocation(hostDataNode, buffer);
   }
 
   @Override
@@ -161,17 +220,25 @@ public class FragmentInstance implements IConsensusRequest {
     return Objects.equals(id, instance.id)
         && type == instance.type
         && Objects.equals(fragment, instance.fragment)
-        && Objects.equals(regionReplicaSet, instance.regionReplicaSet)
+        && Objects.equals(executorType, instance.executorType)
         && Objects.equals(hostDataNode, instance.hostDataNode)
         && Objects.equals(timeFilter, instance.timeFilter);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(id, type, fragment, regionReplicaSet, hostDataNode, timeFilter);
+    return Objects.hash(id, type, fragment, executorType, hostDataNode, timeFilter);
   }
 
   public TDataNodeLocation getHostDataNode() {
     return hostDataNode;
+  }
+
+  public long getTimeOut() {
+    return timeOut;
+  }
+
+  public SessionInfo getSessionInfo() {
+    return sessionInfo;
   }
 }

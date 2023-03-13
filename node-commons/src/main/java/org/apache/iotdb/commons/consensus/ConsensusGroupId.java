@@ -37,6 +37,10 @@ public abstract class ConsensusGroupId {
   // return specific type
   public abstract TConsensusGroupType getType();
 
+  public TConsensusGroupId convertToTConsensusGroupId() {
+    return new TConsensusGroupId(getType(), getId());
+  }
+
   @Override
   public int hashCode() {
     return Objects.hash(getType(), getId());
@@ -67,8 +71,8 @@ public abstract class ConsensusGroupId {
         groupId = new DataRegionId(id);
       } else if (type == TConsensusGroupType.SchemaRegion.getValue()) {
         groupId = new SchemaRegionId(id);
-      } else if (type == TConsensusGroupType.PartitionRegion.getValue()) {
-        groupId = new PartitionRegionId(id);
+      } else if (type == TConsensusGroupType.ConfigRegion.getValue()) {
+        groupId = new ConfigRegionId(id);
       } else {
         throw new IllegalArgumentException(
             "Unrecognized TConsensusGroupType: " + type + " with id = " + id);
@@ -80,5 +84,25 @@ public abstract class ConsensusGroupId {
         TConsensusGroupId tConsensusGroupId) {
       return create(tConsensusGroupId.getType().getValue(), tConsensusGroupId.getId());
     }
+  }
+
+  public static String formatTConsensusGroupId(TConsensusGroupId groupId) {
+    StringBuilder format = new StringBuilder();
+
+    switch (groupId.getType()) {
+      case SchemaRegion:
+        format.append("SchemaRegion");
+        break;
+      case DataRegion:
+        format.append("DataRegion");
+        break;
+      case ConfigRegion:
+        format.append("ConfigRegion");
+        break;
+    }
+
+    format.append("(").append(groupId.getId()).append(")");
+
+    return format.toString();
   }
 }

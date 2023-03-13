@@ -19,7 +19,8 @@
 package org.apache.iotdb.db.mpp.execution.driver;
 
 import org.apache.iotdb.db.mpp.common.FragmentInstanceId;
-import org.apache.iotdb.db.mpp.execution.datatransfer.ISinkHandle;
+import org.apache.iotdb.db.mpp.execution.exchange.sink.ISink;
+import org.apache.iotdb.db.mpp.execution.schedule.task.DriverTaskId;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.Duration;
@@ -47,14 +48,16 @@ public interface IDriver {
    *     processing. Otherwise, meaning that this IDriver is blocked and not ready for next
    *     processing.
    */
-  ListenableFuture<Void> processFor(Duration duration);
+  ListenableFuture<?> processFor(Duration duration);
 
   /**
    * the id information about this IDriver.
    *
    * @return a {@link FragmentInstanceId} instance.
    */
-  FragmentInstanceId getInfo();
+  DriverTaskId getDriverTaskId();
+
+  void setDriverTaskId(DriverTaskId driverTaskId);
 
   /** clear resource used by this fragment instance */
   void close();
@@ -66,6 +69,8 @@ public interface IDriver {
    */
   void failed(Throwable t);
 
-  /** @return get SinkHandle of current IDriver */
-  ISinkHandle getSinkHandle();
+  /** @return get Sink of current IDriver */
+  ISink getSink();
+
+  int getDependencyDriverIndex();
 }

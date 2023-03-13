@@ -122,7 +122,7 @@ public class WriteTest {
     measurementArray.add(new MeasurementSchema("s4", TSDataType.BOOLEAN, TSEncoding.PLAIN));
     pathArray = new ArrayList<>();
     for (int i = 0; i < 5; i++) {
-      pathArray.add(new Path("d1", "s" + i));
+      pathArray.add(new Path("d1", "s" + i, true));
     }
     schema = new Schema();
     LOG.info(schema.toString());
@@ -219,7 +219,7 @@ public class WriteTest {
     // add all measurement except the last one at before writing
     for (int i = 0; i < measurementArray.size() - 1; i++) {
       tsFileWriter.registerTimeseries(
-          new Path(pathArray.get(i).getDeviceIdString()), measurementArray.get(i));
+          new Path(pathArray.get(i).getDevice()), measurementArray.get(i));
     }
     while (true) {
       if (lineCount % stageSize == 0) {
@@ -235,7 +235,7 @@ public class WriteTest {
       }
       if (lineCount == ROW_COUNT / 2) {
         tsFileWriter.registerTimeseries(
-            new Path(pathArray.get(measurementArray.size() - 1).getDeviceIdString()),
+            new Path(pathArray.get(measurementArray.size() - 1).getDevice()),
             measurementArray.get(measurementArray.size() - 1));
       }
       strings = getNextRecord(lineCount, stageState);
@@ -252,7 +252,7 @@ public class WriteTest {
     Path path = pathArray.get(measurementArray.size() - 1);
     MeasurementSchema dupTimeseries = measurementArray.get(measurementArray.size() - 1);
     try {
-      tsFileWriter.registerTimeseries(new Path(path.getDeviceIdString()), dupTimeseries);
+      tsFileWriter.registerTimeseries(new Path(path.getDevice()), dupTimeseries);
     } catch (WriteProcessException e) {
       assertEquals("given timeseries has exists! " + path, e.getMessage());
     }

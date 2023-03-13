@@ -20,9 +20,11 @@
 package org.apache.iotdb.db.mpp.plan.planner.plan.parameter;
 
 import org.apache.iotdb.db.mpp.plan.statement.component.FillPolicy;
-import org.apache.iotdb.db.query.expression.Expression;
+import org.apache.iotdb.db.mpp.plan.statement.literal.Literal;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
@@ -31,23 +33,48 @@ public class FillDescriptor {
   // policy of fill null values
   private final FillPolicy fillPolicy;
 
-  // target column for fill
-  private final Expression expression;
+  // filled value when fillPolicy is VALUE
+  private Literal fillValue;
 
-  public FillDescriptor(FillPolicy fillPolicy, Expression expression) {
+  public FillDescriptor(FillPolicy fillPolicy) {
     this.fillPolicy = fillPolicy;
-    this.expression = expression;
+  }
+
+  public FillDescriptor(FillPolicy fillPolicy, Literal fillValue) {
+    this.fillPolicy = fillPolicy;
+    this.fillValue = fillValue;
   }
 
   public void serialize(ByteBuffer byteBuffer) {
     ReadWriteIOUtils.write(fillPolicy.ordinal(), byteBuffer);
-    Expression.serialize(expression, byteBuffer);
+    if (fillPolicy == FillPolicy.VALUE) {
+      fillValue.serialize(byteBuffer);
+    }
+  }
+
+  public void serialize(DataOutputStream stream) throws IOException {
+    ReadWriteIOUtils.write(fillPolicy.ordinal(), stream);
+    if (fillPolicy == FillPolicy.VALUE) {
+      fillValue.serialize(stream);
+    }
   }
 
   public static FillDescriptor deserialize(ByteBuffer byteBuffer) {
     FillPolicy fillPolicy = FillPolicy.values()[ReadWriteIOUtils.readInt(byteBuffer)];
-    Expression expression = Expression.deserialize(byteBuffer);
-    return new FillDescriptor(fillPolicy, expression);
+    if (fillPolicy == FillPolicy.VALUE) {
+      Literal fillValue = Literal.deserialize(byteBuffer);
+      return new FillDescriptor(fillPolicy, fillValue);
+    } else {
+      return new FillDescriptor(fillPolicy);
+    }
+  }
+
+  public FillPolicy getFillPolicy() {
+    return fillPolicy;
+  }
+
+  public Literal getFillValue() {
+    return fillValue;
   }
 
   @Override
@@ -59,11 +86,11 @@ public class FillDescriptor {
       return false;
     }
     FillDescriptor that = (FillDescriptor) o;
-    return fillPolicy == that.fillPolicy && Objects.equals(expression, that.expression);
+    return fillPolicy == that.fillPolicy && Objects.equals(fillValue, that.fillValue);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(fillPolicy, expression);
+    return Objects.hash(fillPolicy, fillValue);
   }
 }

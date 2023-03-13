@@ -51,19 +51,12 @@ public class StandaloneEnvConfig implements BaseConfig {
   }
 
   public BaseConfig setPartitionInterval(long partitionInterval) {
-    IoTDBDescriptor.getInstance().getConfig().setPartitionInterval(partitionInterval);
+    IoTDBDescriptor.getInstance().getConfig().setTimePartitionInterval(partitionInterval);
     return this;
   }
 
   public BaseConfig setCompressor(String compressor) {
     TSFileDescriptor.getInstance().getConfig().setCompressor(compressor);
-    return this;
-  }
-
-  public BaseConfig setMaxQueryDeduplicatedPathNum(int maxQueryDeduplicatedPathNum) {
-    IoTDBDescriptor.getInstance()
-        .getConfig()
-        .setMaxQueryDeduplicatedPathNum(maxQueryDeduplicatedPathNum);
     return this;
   }
 
@@ -78,11 +71,6 @@ public class StandaloneEnvConfig implements BaseConfig {
     IoTDBDescriptor.getInstance()
         .getConfig()
         .setRpcAdvancedCompressionEnable(rpcAdvancedCompressionEnable);
-    return this;
-  }
-
-  public BaseConfig setEnablePartition(boolean enablePartition) {
-    IoTDBDescriptor.getInstance().getConfig().setEnablePartition(enablePartition);
     return this;
   }
 

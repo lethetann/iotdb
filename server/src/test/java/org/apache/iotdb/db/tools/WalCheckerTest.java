@@ -19,15 +19,17 @@
 
 package org.apache.iotdb.db.tools;
 
-import org.apache.iotdb.commons.conf.IoTDBConstant;
 import org.apache.iotdb.commons.exception.IllegalPathException;
 import org.apache.iotdb.db.constant.TestConstant;
-import org.apache.iotdb.db.exception.SystemCheckException;
 import org.apache.iotdb.db.wal.buffer.WALEntry;
+import org.apache.iotdb.db.wal.buffer.WALInfoEntry;
+import org.apache.iotdb.db.wal.exception.WALException;
 import org.apache.iotdb.db.wal.io.ILogWriter;
 import org.apache.iotdb.db.wal.io.WALFileTest;
 import org.apache.iotdb.db.wal.io.WALWriter;
 import org.apache.iotdb.db.wal.utils.WALByteBufferForTest;
+import org.apache.iotdb.db.wal.utils.WALFileStatus;
+import org.apache.iotdb.db.wal.utils.WALFileUtils;
 
 import org.apache.commons.io.FileUtils;
 import org.junit.Test;
@@ -51,14 +53,14 @@ public class WalCheckerTest {
     boolean caught = false;
     try {
       checker.doCheck();
-    } catch (SystemCheckException e) {
+    } catch (WALException e) {
       caught = true;
     }
     assertTrue(caught);
   }
 
   @Test
-  public void testEmpty() throws IOException, SystemCheckException {
+  public void testEmpty() throws IOException, WALException {
     File tempRoot = new File(TestConstant.BASE_OUTPUT_PATH.concat("root"));
     tempRoot.mkdir();
 
@@ -71,7 +73,7 @@ public class WalCheckerTest {
   }
 
   @Test
-  public void testNormalCheck() throws IOException, SystemCheckException, IllegalPathException {
+  public void testNormalCheck() throws IOException, WALException, IllegalPathException {
     File tempRoot = new File(TestConstant.BASE_OUTPUT_PATH.concat("wal"));
     tempRoot.mkdir();
 
@@ -81,12 +83,14 @@ public class WalCheckerTest {
         walNodeDir.mkdir();
 
         File walFile =
-            new File(walNodeDir, WALWriter.FILE_PREFIX + i + IoTDBConstant.WAL_FILE_SUFFIX);
+            new File(
+                walNodeDir, WALFileUtils.getLogFileName(i, 0, WALFileStatus.CONTAINS_SEARCH_INDEX));
         int fakeMemTableId = 1;
         List<WALEntry> walEntries = new ArrayList<>();
-        walEntries.add(new WALEntry(fakeMemTableId, WALFileTest.getInsertRowPlan(DEVICE_ID)));
-        walEntries.add(new WALEntry(fakeMemTableId, WALFileTest.getInsertTabletPlan(DEVICE_ID)));
-        walEntries.add(new WALEntry(fakeMemTableId, WALFileTest.getDeletePlan(DEVICE_ID)));
+        walEntries.add(new WALInfoEntry(fakeMemTableId, WALFileTest.getInsertRowNode(DEVICE_ID)));
+        walEntries.add(
+            new WALInfoEntry(fakeMemTableId, WALFileTest.getInsertTabletNode(DEVICE_ID)));
+        walEntries.add(new WALInfoEntry(fakeMemTableId, WALFileTest.getDeleteDataNode(DEVICE_ID)));
         int size = 0;
         for (WALEntry walEntry : walEntries) {
           size += walEntry.serializedSize();
@@ -108,7 +112,7 @@ public class WalCheckerTest {
   }
 
   @Test
-  public void testAbnormalCheck() throws IOException, SystemCheckException, IllegalPathException {
+  public void testAbnormalCheck() throws IOException, WALException, IllegalPathException {
     File tempRoot = new File(TestConstant.BASE_OUTPUT_PATH.concat("wal"));
     tempRoot.mkdir();
 
@@ -117,12 +121,15 @@ public class WalCheckerTest {
         File walNodeDir = new File(tempRoot, String.valueOf(i));
         walNodeDir.mkdir();
 
-        File walFile = new File(walNodeDir, "_" + i + IoTDBConstant.WAL_FILE_SUFFIX);
+        File walFile =
+            new File(
+                walNodeDir, WALFileUtils.getLogFileName(i, 0, WALFileStatus.CONTAINS_SEARCH_INDEX));
         int fakeMemTableId = 1;
         List<WALEntry> walEntries = new ArrayList<>();
-        walEntries.add(new WALEntry(fakeMemTableId, WALFileTest.getInsertRowPlan(DEVICE_ID)));
-        walEntries.add(new WALEntry(fakeMemTableId, WALFileTest.getInsertTabletPlan(DEVICE_ID)));
-        walEntries.add(new WALEntry(fakeMemTableId, WALFileTest.getDeletePlan(DEVICE_ID)));
+        walEntries.add(new WALInfoEntry(fakeMemTableId, WALFileTest.getInsertRowNode(DEVICE_ID)));
+        walEntries.add(
+            new WALInfoEntry(fakeMemTableId, WALFileTest.getInsertTabletNode(DEVICE_ID)));
+        walEntries.add(new WALInfoEntry(fakeMemTableId, WALFileTest.getDeleteDataNode(DEVICE_ID)));
         int size = 0;
         for (WALEntry walEntry : walEntries) {
           size += walEntry.serializedSize();
@@ -134,8 +141,8 @@ public class WalCheckerTest {
         try (ILogWriter walWriter = new WALWriter(walFile)) {
           walWriter.write(buffer.getBuffer());
           if (i == 0) {
-            ByteBuffer errorBuffer = ByteBuffer.allocate(4);
-            errorBuffer.putInt(1);
+            ByteBuffer errorBuffer = ByteBuffer.allocate(2);
+            errorBuffer.put((byte) 3);
             walWriter.write(errorBuffer);
           }
         }
@@ -149,7 +156,7 @@ public class WalCheckerTest {
   }
 
   @Test
-  public void testOneDamagedCheck() throws IOException, SystemCheckException {
+  public void testOneDamagedCheck() throws IOException, WALException {
     File tempRoot = new File(TestConstant.BASE_OUTPUT_PATH.concat("wal"));
     tempRoot.mkdir();
 
@@ -158,7 +165,9 @@ public class WalCheckerTest {
         File walNodeDir = new File(tempRoot, String.valueOf(i));
         walNodeDir.mkdir();
 
-        File walFile = new File(walNodeDir, "_" + i + IoTDBConstant.WAL_FILE_SUFFIX);
+        File walFile =
+            new File(
+                walNodeDir, WALFileUtils.getLogFileName(i, 0, WALFileStatus.CONTAINS_SEARCH_INDEX));
 
         FileOutputStream fileOutputStream = new FileOutputStream(walFile);
         try {

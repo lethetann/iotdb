@@ -29,22 +29,22 @@ public interface ColumnBuilder {
     throw new UnsupportedOperationException(getClass().getName());
   }
 
-  /** Write a short to the current entry; */
+  /** Write an int to the current entry; */
   default ColumnBuilder writeInt(int value) {
     throw new UnsupportedOperationException(getClass().getName());
   }
 
-  /** Write a int to the current entry; */
+  /** Write a long to the current entry; */
   default ColumnBuilder writeLong(long value) {
     throw new UnsupportedOperationException(getClass().getName());
   }
 
-  /** Write a long to the current entry; */
+  /** Write a float to the current entry; */
   default ColumnBuilder writeFloat(float value) {
     throw new UnsupportedOperationException(getClass().getName());
   }
 
-  /** Write a byte sequences to the current entry; */
+  /** Write a double to the current entry; */
   default ColumnBuilder writeDouble(double value) {
     throw new UnsupportedOperationException(getClass().getName());
   }
@@ -66,6 +66,8 @@ public interface ColumnBuilder {
 
   /**
    * Write value at index of passing column
+   *
+   * <p>Caller should make sure that value at index is not null
    *
    * @param column source column whose type should be same as ColumnBuilder
    * @param index index of source column to read from

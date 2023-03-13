@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
@@ -44,34 +46,47 @@ import (
 // is useful to clean up resources used by previous datasource instance when a new datasource
 // instance created upon datasource settings changed.
 var (
-	_ backend.QueryDataHandler      = (*IoTDBDataSource)(nil)
-	_ backend.CheckHealthHandler    = (*IoTDBDataSource)(nil)
-	_ backend.StreamHandler         = (*IoTDBDataSource)(nil)
-	_ instancemgmt.InstanceDisposer = (*IoTDBDataSource)(nil)
+	_ backend.QueryDataHandler    = (*IoTDBDataSource)(nil)
+	_ backend.CheckHealthHandler  = (*IoTDBDataSource)(nil)
+	_ backend.CallResourceHandler = (*IoTDBDataSource)(nil)
 )
 
-// NewSampleDatasource creates a new datasource instance.
-func NewSampleDatasource(d backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+// ApacheIoTDBDatasource creates a new datasource instance.
+func ApacheIoTDBDatasource(d backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	var dm dataSourceModel
 	if err := json.Unmarshal(d.JSONData, &dm); err != nil {
 		return nil, err
 	}
-	return &IoTDBDataSource{Username: dm.Username, Password: dm.Password, Ulr: dm.Url}, nil
+	ops, err := d.HTTPClientOptions()
+	if err != nil {
+		return nil, fmt.Errorf("http client options: %w", err)
+	}
+	httpClient, err := httpclient.New(ops)
+	if err != nil {
+		return nil, fmt.Errorf("new httpclient error: %w", err)
+	}
+	var authorization = ""
+	if password, exists := d.DecryptedSecureJSONData["password"]; exists {
+		authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(dm.Username+":"+password))
+	}
+	return &IoTDBDataSource{CallResourceHandler: iotdbResourceHandler(authorization, httpClient), Username: dm.Username, Ulr: dm.Url, httpClient: httpClient}, nil
 }
 
 // SampleDatasource is an example datasource which can respond to data queries, reports
 // its health and has streaming skills.
 type IoTDBDataSource struct {
-	Password string
-	Username string
-	Ulr      string
+	backend.CallResourceHandler
+	Username   string
+	Ulr        string
+	httpClient *http.Client
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
-// be disposed and a new one will be created using NewSampleDatasource factory function.
+// be disposed and a new one will be created using ApacheIoTDBDatasource factory function.
 func (d *IoTDBDataSource) Dispose() {
 	// Clean up datasource instance resources.
+	d.httpClient.CloseIdleConnections()
 }
 
 // QueryData handles multiple queries and returns multiple responses.
@@ -97,7 +112,6 @@ func (d *IoTDBDataSource) QueryData(ctx context.Context, req *backend.QueryDataR
 
 type dataSourceModel struct {
 	Username string `json:"username"`
-	Password string `json:"password"`
 	Url      string `json:"url"`
 }
 
@@ -114,29 +128,30 @@ type queryParam struct {
 	EndTime      int64    `json:"endTime"`
 	Condition    string   `json:"condition"`
 	Control      string   `json:"control"`
-	Aggregated   string   `json:"aggregated"`
+	SqlType      string   `json:"sqlType"`
 	Paths        []string `json:"paths"`
 	AggregateFun string   `json:"aggregateFun"`
 	FillClauses  string   `json:"fillClauses"`
 	GroupBy      groupBy  `json:"groupBy"`
+	Hide         bool     `json:"hide"`
 }
 
 type QueryDataReq struct {
 	Expression []string `json:"expression"`
-	PrefixPath []string `json:"prefixPath"`
-	StartTime  int64    `json:"startTime"`
-	EndTime    int64    `json:"endTime"`
+	PrefixPath []string `json:"prefix_path"`
+	StartTime  int64    `json:"start_time"`
+	EndTime    int64    `json:"end_time"`
 	Condition  string   `json:"condition"`
 	Control    string   `json:"control"`
 }
 
 type QueryDataResponse struct {
-	Expressions []string    `json:"expressions"`
-	Timestamps  []int64     `json:"timestamps"`
-	Values      [][]float32 `json:"values"`
-	ColumnNames interface{} `json:"columnNames"`
-	Code        int32       `json:"code"`
-	Message     string      `json:"message"`
+	Expressions []string        `json:"expressions"`
+	Timestamps  []int64         `json:"timestamps"`
+	Values      [][]interface{} `json:"values"`
+	ColumnNames interface{}     `json:"column_names"`
+	Code        int32           `json:"code"`
+	Message     string          `json:"message"`
 }
 
 type loginStatus struct {
@@ -148,22 +163,75 @@ func NewQueryDataReq(expression []string, prefixPath []string, startTime int64, 
 	return &QueryDataReq{Expression: expression, PrefixPath: prefixPath, StartTime: startTime, EndTime: endTime, Condition: condition, Control: control}
 }
 
+func verifyQuery(query backend.DataQuery) (qp *queryParam, errMsg string) {
+
+	err := json.Unmarshal(query.JSON, &qp)
+	if err != nil {
+		return nil, ""
+	}
+
+	if qp.Hide {
+		return nil, "none"
+	}
+
+	if qp.SqlType == "SQL: Drop-down List" {
+		if len(qp.Paths) < 1 {
+			return nil, "Input error, please select TIME-SERIES"
+		}
+		if qp.GroupBy.SamplingInterval != "" && qp.AggregateFun == "" {
+			return nil, "Input error, please select FUNCTION when SAMPLING INTERVAL has a value"
+		}
+	} else if qp.SqlType == "SQL: Full Customized" {
+		if len(qp.Expression) == 0 {
+			return nil, "Input error, SELECT is required"
+		}
+
+		for i := 0; i < len(qp.Expression); i++ {
+			if qp.Expression[i] == "" {
+				return nil, "Input error, SELECT is required"
+			}
+
+		}
+		if len(qp.PrefixPath) == 0 {
+			return nil, "Input error, FROM is required"
+		}
+		for i := 0; i < len(qp.PrefixPath); i++ {
+			if qp.PrefixPath[i] == "" {
+				return nil, "Input error, FROM is required"
+			}
+		}
+	} else {
+		return nil, "none"
+	}
+
+	return qp, ""
+}
+
 func (d *IoTDBDataSource) query(cxt context.Context, pCtx backend.PluginContext, query backend.DataQuery) backend.DataResponse {
 	response := backend.DataResponse{}
-	var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(d.Username+":"+d.Password))
+
+	instanceSettings := pCtx.DataSourceInstanceSettings
+	var authorization = ""
+	if password, exists := instanceSettings.DecryptedSecureJSONData["password"]; exists {
+		// Use the decrypted API key.
+		authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(d.Username+":"+password))
+	}
 
 	// Unmarshal the JSON into our queryModel.
-	var qp queryParam
+
 	var qdReq QueryDataReq
-	response.Error = json.Unmarshal(query.JSON, &qp)
-	if response.Error != nil {
+	qp, msg := verifyQuery(query)
+	if msg == "none" {
+		return response
+	} else if msg != "" {
+		response.Error = errors.New(msg)
 		return response
 	}
+
 	qp.StartTime = query.TimeRange.From.UnixNano() / 1000000
 	qp.EndTime = query.TimeRange.To.UnixNano() / 1000000
 
-	client := &http.Client{}
-	if qp.Aggregated == "Aggregation" {
+	if qp.SqlType == "SQL: Drop-down List" {
 		qp.Control = ""
 		var expressions []string = qp.Paths[len(qp.Paths)-1:]
 		var paths []string = qp.Paths[0 : len(qp.Paths)-1]
@@ -185,8 +253,10 @@ func (d *IoTDBDataSource) query(cxt context.Context, pCtx backend.PluginContext,
 			qp.Control += " fill" + qp.FillClauses
 		}
 		qdReq = *NewQueryDataReq(expressions, prefixPaths, qp.StartTime, qp.EndTime, qp.Condition, qp.Control)
-	} else {
+	} else if qp.SqlType == "SQL: Full Customized" {
 		qdReq = *NewQueryDataReq(qp.Expression, qp.PrefixPath, qp.StartTime, qp.EndTime, qp.Condition, qp.Control)
+	} else {
+		return response
 	}
 	qpJson, _ := json.Marshal(qdReq)
 	reader := bytes.NewReader(qpJson)
@@ -197,33 +267,46 @@ func (d *IoTDBDataSource) query(cxt context.Context, pCtx backend.PluginContext,
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Add("Authorization", authorization)
 
-	rsp, _ := client.Do(request)
+	rsp, _ := d.httpClient.Do(request)
 	body, err := io.ReadAll(rsp.Body)
 	if err != nil {
+		response.Error = errors.New("Data source is not working properly")
 		log.DefaultLogger.Error("Data source is not working properly", err)
+		return response
 	}
 
 	var queryDataResp QueryDataResponse
 	err = json.Unmarshal(body, &queryDataResp)
 	if err != nil {
+		response.Error = errors.New("Parsing JSON error")
 		log.DefaultLogger.Error("Parsing JSON error", err)
+		return response
 	}
 
 	defer rsp.Body.Close()
 	if queryDataResp.Code > 0 {
 		response.Error = errors.New(queryDataResp.Message)
 		log.DefaultLogger.Error(queryDataResp.Message)
+		return response
 
 	}
 	// create data frame response.
 	frame := data.NewFrame("response")
 	for i := 0; i < len(queryDataResp.Expressions); i++ {
+		if queryDataResp.Timestamps == nil || len(queryDataResp.Timestamps) == 0 {
+			times := make([]time.Time, 1)
+			tmp := make([]float64, 1)
+			frame.Fields = append(frame.Fields,
+				data.NewField("time", nil, times),
+				data.NewField(queryDataResp.Expressions[i], nil, tmp),
+			)
+			continue
+		}
 		times := make([]time.Time, len(queryDataResp.Timestamps))
-		values := make([]float32, len(queryDataResp.Timestamps))
 		for c := 0; c < len(queryDataResp.Timestamps); c++ {
 			times[c] = time.Unix(queryDataResp.Timestamps[c]/1000, 0)
-			values[c] = queryDataResp.Values[i][c]
 		}
+		values := recoverType(queryDataResp.Values[i])
 		frame.Fields = append(frame.Fields,
 			data.NewField("time", nil, times),
 			data.NewField(queryDataResp.Expressions[i], nil, values),
@@ -234,9 +317,54 @@ func (d *IoTDBDataSource) query(cxt context.Context, pCtx backend.PluginContext,
 	return response
 }
 
+func recoverType(m []interface{}) interface{} {
+	if len(m) > 0 {
+		switch m[0].(type) {
+		case float64:
+			tmp := make([]float64, len(m))
+			for i := range m {
+				if m[i] == nil {
+					tmp[i] = 0
+				} else {
+					tmp[i] = m[i].(float64)
+				}
+			}
+			return tmp
+		case string:
+			tmp := make([]string, len(m))
+			for i := range m {
+				tmp[i] = m[i].(string)
+			}
+			return tmp
+		case bool:
+			tmp := make([]float64, len(m))
+			for i := range m {
+				if m[i].(bool) {
+					tmp[i] = 1
+				} else {
+					tmp[i] = 0
+				}
+			}
+			return tmp
+		default:
+			tmp := make([]float64, len(m))
+			for i := range m {
+				if m[i] == nil {
+					tmp[i] = 0
+				} else {
+					tmp[i] = m[i].(float64)
+				}
+			}
+			return tmp
+		}
+	} else {
+		return make([]float64, 0)
+	}
+}
+
 // Whether the last character of the URL for processing datasource configuration is "/"
 func DataSourceUrlHandler(url string) string {
-	var lastCharacter = url[len(url)-1 : len(url)]
+	var lastCharacter = url[len(url)-1:]
 	if lastCharacter == "/" {
 		url = url[0 : len(url)-1]
 	}
@@ -249,102 +377,56 @@ func DataSourceUrlHandler(url string) string {
 // a datasource is working as expected.
 func (d *IoTDBDataSource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	log.DefaultLogger.Info("CheckHealth called", "request", req)
-	var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(d.Username+":"+d.Password))
-	var status = backend.HealthStatusError
-	var message = "Data source is not working properly"
 
-	var dataSourceUrl = DataSourceUrlHandler(d.Ulr)
+	var status = backend.HealthStatusOk
+	var message = "Data source is working"
 
-	client := &http.Client{}
-	request, err := http.NewRequest(http.MethodGet, dataSourceUrl+"/grafana/v1/login", nil)
-	if err != nil {
-		panic(err)
-	}
-	request.Header.Add("Authorization", authorization)
+	loginStatus, err := d.IoTDBLogin(req)
 
-	response, _ := client.Do(request)
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		log.DefaultLogger.Error("Data source is not working properly", err)
-	}
-
-	var loginStatus loginStatus
-	err = json.Unmarshal(body, &loginStatus)
 	if err != nil {
 		log.DefaultLogger.Error("Parsing JSON error", err)
-	} else if loginStatus.Code == 200 {
-		status = backend.HealthStatusOk
+		status = backend.HealthStatusError
+		message = fmt.Sprint("Failed to connect to iotdb service.", err.Error())
+	} else if loginStatus.Code != 200 {
+		status = backend.HealthStatusError
 		message = loginStatus.Message
 	}
-
-	defer response.Body.Close()
-
 	return &backend.CheckHealthResult{
 		Status:  status,
 		Message: message,
 	}, nil
 }
 
-// SubscribeStream is called when a client wants to connect to a stream. This callback
-// allows sending the first message.
-func (d *IoTDBDataSource) SubscribeStream(_ context.Context, req *backend.SubscribeStreamRequest) (*backend.SubscribeStreamResponse, error) {
-	log.DefaultLogger.Info("SubscribeStream called", "request", req)
-
-	status := backend.SubscribeStreamStatusPermissionDenied
-	if req.Path == "stream" {
-		// Allow subscribing only on expected path.
-		status = backend.SubscribeStreamStatusOK
+func (d *IoTDBDataSource) IoTDBLogin(req *backend.CheckHealthRequest) (*loginStatus, error) {
+	instanceSettings := req.PluginContext.DataSourceInstanceSettings
+	var authorization = ""
+	if password, exists := instanceSettings.DecryptedSecureJSONData["password"]; exists {
+		authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(d.Username+":"+password))
+	}
+	var dataSourceUrl = DataSourceUrlHandler(d.Ulr)
+	request, err := http.NewRequest(http.MethodGet, dataSourceUrl+"/grafana/v1/login", nil)
+	if err != nil {
+		log.DefaultLogger.Error("Error creating NewRequest", err.Error())
+		return nil, err
+	}
+	request.Header.Add("Authorization", authorization)
+	response, err := d.httpClient.Do(request)
+	if err != nil {
+		log.DefaultLogger.Error("Failed to connect to iotdb service", err.Error())
+		return nil, err
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		log.DefaultLogger.Error("Failed to get iotdb service data", err.Error())
+		return nil, err
+	}
+	var loginStatus loginStatus
+	err = json.Unmarshal(body, &loginStatus)
+	if err != nil {
+		log.DefaultLogger.Error("Parsing JSON error", err)
+		return nil, err
 	}
 
-	return &backend.SubscribeStreamResponse{
-		Status: status,
-	}, nil
-}
-
-// RunStream is called once for any open channel.  Results are shared with everyone
-// subscribed to the same channel.
-func (d *IoTDBDataSource) RunStream(ctx context.Context, req *backend.RunStreamRequest, sender *backend.StreamSender) error {
-	log.DefaultLogger.Info("RunStream called", "request", req)
-
-	// Create the same data frame as for query data.
-	frame := data.NewFrame("response")
-
-	// Add fields (matching the same schema used in QueryData).
-	frame.Fields = append(frame.Fields,
-		data.NewField("time", nil, make([]time.Time, 1)),
-		data.NewField("values", nil, make([]int64, 1)),
-	)
-
-	counter := 0
-
-	// Stream data frames periodically till stream closed by Grafana.
-	for {
-		select {
-		case <-ctx.Done():
-			log.DefaultLogger.Info("Context done, finish streaming", "path", req.Path)
-			return nil
-		case <-time.After(time.Second):
-			// Send new data periodically.
-			frame.Fields[0].Set(0, time.Now())
-			frame.Fields[1].Set(0, int64(10*(counter%2+1)))
-
-			counter++
-
-			err := sender.SendFrame(frame, data.IncludeAll)
-			if err != nil {
-				log.DefaultLogger.Error("Error sending frame", "error", err)
-				continue
-			}
-		}
-	}
-}
-
-// PublishStream is called when a client sends a message to the stream.
-func (d *IoTDBDataSource) PublishStream(_ context.Context, req *backend.PublishStreamRequest) (*backend.PublishStreamResponse, error) {
-	log.DefaultLogger.Info("PublishStream called", "request", req)
-
-	// Do not allow publishing at all.
-	return &backend.PublishStreamResponse{
-		Status: backend.PublishStreamStatusPermissionDenied,
-	}, nil
+	defer response.Body.Close()
+	return &loginStatus, nil
 }

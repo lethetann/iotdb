@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -18,22 +18,34 @@
 # under the License.
 #
 
+DATANODE_CONF="`dirname "$0"`/../conf"
+dn_rpc_port=`sed '/^dn_rpc_port=/!d;s/.*=//' ${DATANODE_CONF}/iotdb-datanode.properties`
 
-PIDS=$(ps ax | grep -i 'DataNode' | grep java | grep -v grep | awk '{print $1}')
-sig=0
-for every_pid in ${PIDS}
-do
-  cwd_path=$(ls -l /proc/$every_pid | grep "cwd ->" | grep -v grep | awk '{print $NF}')
-  pwd_path=$(/bin/pwd)
-  if [[ $pwd_path =~ $cwd_path ]]; then
-    kill -s TERM $every_pid
-    echo "close IoTDB"
-    sig=1
+echo "check whether the rpc_port is used..., port is" $dn_rpc_port
+
+if  type lsof > /dev/null 2>&1 ; then
+  PID=$(lsof -t -i:"${dn_rpc_port}" -sTCP:LISTEN)
+elif type netstat > /dev/null 2>&1 ; then
+  PID=$(netstat -anp 2>/dev/null | grep ":${dn_rpc_port} " | grep ' LISTEN ' | awk '{print $NF}' | sed "s|/.*||g" )
+else
+  echo ""
+  echo " Error: No necessary tool."
+  echo " Please install 'lsof' or 'netstat'."
+  exit 1
+fi
+
+PID_VERIFY=$(ps ax | grep -i 'DataNode' | grep java | grep -v grep | awk '{print $1}')
+if [ -z "$PID" ]; then
+  echo "No DataNode to stop"
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "Maybe you can try to run in sudo mode to detect the process."
   fi
-done
-
-if [ $sig -eq 0 ]; then
-  echo "No IoTDB server to stop"
+  exit 1
+elif [[ "${PID_VERIFY}" =~ ${PID} ]]; then
+  kill -s TERM "$PID"
+  echo "Stop DataNode, PID:" "$PID"
+else
+  echo "No DataNode to stop"
   exit 1
 fi
 

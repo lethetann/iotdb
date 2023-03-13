@@ -96,10 +96,10 @@ public class MetadataQuerierByFileImpl implements IMetadataQuerier {
     // group measurements by device
     TreeMap<String, Set<String>> deviceMeasurementsMap = new TreeMap<>();
     for (Path path : paths) {
-      if (!deviceMeasurementsMap.containsKey(path.getDeviceIdString())) {
-        deviceMeasurementsMap.put(path.getDeviceIdString(), new HashSet<>());
+      if (!deviceMeasurementsMap.containsKey(path.getDevice())) {
+        deviceMeasurementsMap.put(path.getDevice(), new HashSet<>());
       }
-      deviceMeasurementsMap.get(path.getDeviceIdString()).add(path.getMeasurement());
+      deviceMeasurementsMap.get(path.getDevice()).add(path.getMeasurement());
     }
     int count = 0;
     boolean enough = false;
@@ -130,7 +130,8 @@ public class MetadataQuerierByFileImpl implements IMetadataQuerier {
         } else {
           measurementId = ((TimeseriesMetadata) timeseriesMetadata).getMeasurementId();
         }
-        this.chunkMetaDataCache.put(new Path(selectedDevice, measurementId), chunkMetadataList);
+        this.chunkMetaDataCache.put(
+            new Path(selectedDevice, measurementId, true), chunkMetadataList);
         count += chunkMetadataList.size();
         if (count == CACHED_ENTRY_NUMBER) {
           enough = true;
@@ -172,7 +173,7 @@ public class MetadataQuerierByFileImpl implements IMetadataQuerier {
     TreeMap<String, Set<String>> deviceMeasurementsMap = new TreeMap<>();
     for (Path path : paths) {
       deviceMeasurementsMap
-          .computeIfAbsent(path.getDeviceIdString(), key -> new HashSet<>())
+          .computeIfAbsent(path.getDevice(), key -> new HashSet<>())
           .add(path.getMeasurement());
     }
     for (Map.Entry<String, Set<String>> deviceMeasurements : deviceMeasurementsMap.entrySet()) {
